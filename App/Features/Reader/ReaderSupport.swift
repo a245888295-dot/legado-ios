@@ -128,6 +128,15 @@ enum ReaderUnderlinePainter {
 // 不再存任何一个绝对 pt —— 以前字号一放大，行距/段距/边距全被稀释，
 // 用户看到的就是「28 号字满屏留白」。
 
+/// 新版排版引擎的开关。
+/// 一旦有未捕获异常（多半来自 TextKit 布局断言），启动时会自动置为 true，
+/// 退回「只调参数、不接管断行」的旧路径，让用户还能正常读书。
+enum ReaderEngineSwitch {
+    static let defaultsKey = "readerEngineDisabledV1"
+    static var isDisabled: Bool { UserDefaults.standard.bool(forKey: defaultsKey) }
+    static func setDisabled(_ value: Bool) { UserDefaults.standard.set(value, forKey: defaultsKey) }
+}
+
 @MainActor
 struct ReaderTypography {
     let fontSize: CGFloat
@@ -195,7 +204,7 @@ struct ReaderTypography {
         // 这样一页正好装下 n 行，页脚不会剩下半行高的空白 —— 之前的底部留白主要来自这里。
         let ideal = Self.idealLineHeight(fontSize: size, multiple: CGFloat(c.lineHeightMultiple))
         var height = ideal
-        if availableHeight > ideal * 2.5 {
+        if !ReaderEngineSwitch.isDisabled, availableHeight > ideal * 2.5 {
             let lines = max(1, floor(availableHeight / ideal))
             let snapped = availableHeight / lines
             if snapped <= ideal * 1.08 { height = snapped }
@@ -357,14 +366,21 @@ final class ReaderLineMetrics {
             return nil
         }
 
+        // 至少要能放下两个字，否则说明这次收缩不合理（多半是超长英文单词或极端字号），
+        // 交回系统处理，免得排出一字一行。
+        guard fixed - lineStart >= 2 else {
+            cache[key] = 0
+            return nil
+        }
+
         let sub = Self.measuringSlice(storage, location: lineStart, length: fixed - lineStart)
         let line = CTLineCreateWithAttributedString(sub as CFAttributedString)
         var width = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)) + indent
-        // 减 0.5 让系统一定在目标字符之前断，宁可少一个字也不能把标点顶到行首。
-        width = max(width - 0.5, available * 0.25)
-        let result = min(width, available)
-        cache[key] = result
-        return result
+        // 加 0.5 是留给字宽取整的余量：实测宽度比真实字形窄一点点时，
+        // TextKit 会算出行宽超过行片段宽度，直接抛异常。多给半磅不会多塞进一个字。
+        width = min(available, max(width + 0.5, available * 0.3))
+        cache[key] = width
+        return width
     }
 }
 

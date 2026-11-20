@@ -258,6 +258,7 @@ struct ReaderTextView: UIViewRepresentable {
         let view = ReaderLayoutTextView(frame: .zero, textContainer: container)
         let metrics = ReaderLineMetrics()
         metrics.storage = view.textStorage
+        metrics.enabled = !ReaderEngineSwitch.isDisabled
         container.metrics = metrics
         context.coordinator.lineMetrics = metrics
         view.onLayout = { [weak coordinator = context.coordinator] view in
@@ -342,7 +343,6 @@ struct ReaderTextView: UIViewRepresentable {
             metrics?.indentWidth = typography.indentWidth
             metrics?.invalidate()
             context.coordinator.lastBuildHeight = view.bounds.height
-            context.coordinator.resetBuildHeightRetries()
             let bodyAttributes = typography.bodyAttributes
             let rendered = NSMutableAttributedString(string: "")
             context.coordinator.previousBodyStart = nil
@@ -461,6 +461,7 @@ struct ReaderTextView: UIViewRepresentable {
         /// 所以视图尺寸定下来之后必须按新高度重排一次。
         var lastBuildHeight: CGFloat = 0
         private var buildHeightRetries = 0
+        private var pendingHeightRender = false
         private var isTurningPage = false
         private var isRenderingAutoPage = false
         private var lastReportedPage: Int?
@@ -852,10 +853,19 @@ struct ReaderTextView: UIViewRepresentable {
 
         func reportPage(in view: UITextView) {
             guard view.bounds.width > 0, view.bounds.height > 0 else { return }
-            if abs(view.bounds.height - lastBuildHeight) > 0.5, buildHeightRetries < 3 {
+            // 尺寸定下来之后要按新高度重排一次（行高对齐整页依赖它）。
+            // 上限 3 次且不重置：万一高度反复抖动，宁可排版稍松也不能陷入重排循环。
+            if !pendingHeightRender,
+               abs(view.bounds.height - lastBuildHeight) > 0.5,
+               buildHeightRetries < 3 {
                 buildHeightRetries += 1
+                pendingHeightRender = true
                 lastBuildHeight = view.bounds.height
-                DispatchQueue.main.async { [weak self] in self?.parent.onDeferredRender() }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.pendingHeightRender = false
+                    self.parent.onDeferredRender()
+                }
             }
             updatePageMask(in: view)
             let metrics = pageMetrics(for: view)
@@ -884,6 +894,10 @@ struct ReaderTextView: UIViewRepresentable {
                 return
             }
             guard !view.text.isEmpty else { return }
+            // 排版跑通了，撤掉「进页中断」的旗子。
+            if UserDefaults.standard.bool(forKey: "readerEnginePendingOpen") {
+                UserDefaults.standard.set(false, forKey: "readerEnginePendingOpen")
+            }
             var ranges: [NSRange] = []
             for page in pages(in: view) {
                 let characterRange = page.characterRange
@@ -917,9 +931,6 @@ struct ReaderTextView: UIViewRepresentable {
             pageRangeRetryCount = 0
         }
 
-        func resetBuildHeightRetries() {
-            buildHeightRetries = 0
-        }
 
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
             isUserDragging = true

@@ -9,6 +9,7 @@ struct DiagnosticLogView: View {
     @State private var exportsLog = false
     @State private var exportText = ""
     @State private var errorMessage: String?
+    @State private var crashText: String?
 
     private var filtered: [DiagnosticLogEntry] {
         entries.filter {
@@ -19,6 +20,25 @@ struct DiagnosticLogView: View {
 
     var body: some View {
         List {
+            if let crashText {
+                Section {
+                    ScrollView {
+                        Text(crashText)
+                            .font(.system(.caption2, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 220)
+                    Button("清除崩溃记录", role: .destructive) {
+                        ReaderCrashReport.clear()
+                        self.crashText = nil
+                    }
+                } header: {
+                    Text("上次崩溃（排版引擎已自动回退）")
+                } footer: {
+                    Text("把这段内容发出去就能定位问题。清除后不会影响阅读。")
+                }
+            }
             Section {
                 Picker("级别", selection: $level) {
                     Text("全部").tag("all")
@@ -81,7 +101,10 @@ struct DiagnosticLogView: View {
         } message: { Text(errorMessage ?? "") }
     }
 
-    private func reload() { entries = DiagnosticLog.shared.snapshot() }
+    private func reload() {
+        entries = DiagnosticLog.shared.snapshot()
+        crashText = ReaderCrashReport.text
+    }
     private func levelTitle(_ level: DiagnosticLogEntry.Level) -> String {
         switch level { case .info: "信息"; case .warning: "警告"; case .error: "错误" }
     }

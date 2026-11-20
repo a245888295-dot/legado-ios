@@ -85,6 +85,8 @@ struct ReaderView: View {
     @State private var showsResetTypographyAlert = false
     /// 排版模型迁移标记：从「绝对 pt」换成「字号倍数」只做一次。
     @AppStorage("typographyModelV3") private var typographyModelMigrated = false
+    /// 新版排版引擎的开关（崩溃后会自动关掉，修好后可在这里重新打开）。
+    @AppStorage("readerEngineDisabledV1") private var engineDisabled = false
     @AppStorage("headerPaddingBottom") private var headerPaddingBottom = 0.0
     @AppStorage("headerPaddingLeft") private var headerPaddingLeft = 16.0
     @AppStorage("headerPaddingRight") private var headerPaddingRight = 16.0
@@ -244,6 +246,9 @@ struct ReaderView: View {
         } message: { Text(readerSettingSaveError ?? "") }
         .onAppear {
             migrateTypographyOnce()
+            // 进阅读页先立旗，排版跑通后由 ReaderTextView 撤掉。
+            // 如果进程在排版过程中死掉，旗子会留到下次启动，用来熔断新版引擎。
+            UserDefaults.standard.set(true, forKey: "readerEnginePendingOpen")
             activity.beginReading(book)
             speech.onNextChapter = { moveSpeechToChapter(direction: 1) }
             speech.onPreviousChapter = { moveSpeechToChapter(direction: -1) }
@@ -1459,6 +1464,17 @@ struct ReaderView: View {
 
     private var advancedStyleControls: some View {
         Form {
+                Section {
+                    Toggle("新版排版引擎", isOn: Binding(
+                        get: { !engineDisabled },
+                        set: { value in
+                            engineDisabled = !value
+                            readerRenderRevision &+= 1
+                        }
+                    ))
+                } footer: {
+                    Text("负责中文标点避头尾、整页对齐和标题孤行保护。如果某次进入阅读页闪退了，它会自动关掉以保证还能正常读书，修好后在这里重新打开。")
+                }
                 Section("文字") {
                     valueSlider("字号", value: $fontSize, range: 5...50, format: { "\(Int($0))" })
                     valueSlider("字间距", value: $letterSpacing, range: -0.5...0.5, step: 0.01, format: { String(format: "%.2f", $0) })
