@@ -154,6 +154,9 @@ final class VolumeKeyPager: NSObject, @unchecked Sendable {
     private var volumeView: MPVolumeView?
 
     private var lastVolume: Float = -1
+    /// 打开阅读界面时的系统音量。每翻一页都把音量拉回这个值，
+    /// 而不是「按键前的值」——某一次没写回去，也不会一路往下滑到底。
+    private var baselineVolume: Float = -1
     private var lastSequence = -1
     private var lastFire: CFTimeInterval = 0
     /// 回写音量期间收到的通知要丢掉，否则会自己翻自己。
@@ -181,7 +184,8 @@ final class VolumeKeyPager: NSObject, @unchecked Sendable {
         installVolumeView()
 
         lastVolume = session.outputVolume
-        note("启动 当前音量=\(lastVolume) 输出通路=\(session.currentRoute.outputs.first?.portType.rawValue ?? "-")")
+        if baselineVolume < 0 { baselineVolume = lastVolume }
+        note("启动 当前音量=\(lastVolume) 基准=\(baselineVolume) 输出通路=\(session.currentRoute.outputs.first?.portType.rawValue ?? "-")")
 
         for name in Self.notificationNames {
             NotificationCenter.default.addObserver(
@@ -202,6 +206,8 @@ final class VolumeKeyPager: NSObject, @unchecked Sendable {
     func stop() {
         guard isActive else { return }
         isActive = false
+        // 下次进阅读界面重新取一次基准，用户可能在别处调过音量。
+        baselineVolume = -1
         NotificationCenter.default.removeObserver(self)
         volumeObservation?.invalidate()
         volumeObservation = nil
@@ -265,7 +271,7 @@ final class VolumeKeyPager: NSObject, @unchecked Sendable {
             object: nil,
             userInfo: ["direction": VolumeKeyPager.direction(volumeRising: rising)]
         )
-        restore(to: previous, category: category)
+        restore(category: category)
     }
 
     /// 别的 App 抢走音频（比如你开始放歌）会把我们的会话打断，恢复后要重新激活，
@@ -290,38 +296,42 @@ final class VolumeKeyPager: NSObject, @unchecked Sendable {
 
     /// 把音量写回去。
     ///
-    /// 关键点：光给 `MPVolumeSlider.value` 赋值，系统很多时候不买账（滑块内部状态是滞后的），
-    /// 所以先直写私有接口，再用滑块同步一次并主动发一次 action。两路都试，外加延迟再写一次，
-    /// 避免系统把「按键那一刻的音量」在我们之后才落盘，造成音量逐次上漂。
-    private func restore(to value: Float, category: String?) {
+    /// 硬件音量键是在系统进程里处理的，我们收到通知时音量已经真的降了一档；
+    /// 更麻烦的是系统往往在我们写回之后才把它自己那一次「落盘」，把我们的写回盖掉。
+    /// 所以这里不写一次就算完，而是写一次、立刻读回来核对，没变就再写，最多四次。
+    /// 目标值固定取 baseline（进阅读界面时的音量），保证任何一次失败都不会累积成一路下滑。
+    private func restore(category: String?) {
+        let target = baselineVolume >= 0 ? baselineVolume : lastVolume
         suppressUntil = CACurrentMediaTime() + 0.3
         lastRestoreAt = CACurrentMediaTime()
-        lastVolume = value
-        applyVolume(value, category: category)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+        lastVolume = target
+        writeUntilStable(target, category: category, attempt: 0)
+    }
+
+    /// 写 → 读 → 没回到目标值就再写，每次隔 40 毫秒。
+    private func writeUntilStable(_ target: Float, category: String?, attempt: Int) {
+        applyVolume(target, category: category)
+        let actual = AVAudioSession.sharedInstance().outputVolume
+        if abs(actual - target) <= 0.012 { return }
+        if attempt >= 3 {
+            note("回写失败 实际=\(actual) 目标=\(target)")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
             guard let self, self.isActive else { return }
-            self.applyVolume(value, category: category)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                guard let self, self.isActive else { return }
-                let actual = AVAudioSession.sharedInstance().outputVolume
-                if actual > 0.01, abs(actual - value) > 0.012 {
-                    self.note("音量漂了 \(actual) → \(value)，再写一次")
-                    self.applyVolume(value, category: category)
-                }
-            }
+            self.writeUntilStable(target, category: category, attempt: attempt + 1)
         }
     }
 
     private func applyVolume(_ value: Float, category: String?) {
         // 私有接口直写系统音量，按按键时那条通知里的类别写，避免写错通道（媒体音量 / 铃声音量）。
-        let direct = Self.setSystemVolume(value, category: category ?? "Audio/Video")
-        // 滑块只代表媒体音量，类别不是媒体时不要用它去写。
-        if category == nil || category == "Audio/Video", let slider = volumeSlider() {
+        _ = Self.setSystemVolume(value, category: category ?? "Audio/Video")
+        // 滑块代表当前输出通路的音量，实在写不进去时靠它兜一次底。
+        if let slider = volumeSlider() {
+            slider.layoutIfNeeded()
             slider.value = value
-            // 只赋值常常不生效，补一次 action 让系统真正采纳。
             slider.sendActions(for: .touchUpInside)
         }
-        note("回写 \(value) 直写=\(direct ? "成功" : "失败")")
     }
 
     // MARK: 音量写入
@@ -338,8 +348,9 @@ final class VolumeKeyPager: NSObject, @unchecked Sendable {
             }
             return
         }
-        let view = MPVolumeView(frame: CGRect(x: -300, y: -300, width: 120, height: 40))
-        view.alpha = 0.01
+        let view = MPVolumeView(frame: CGRect(x: -600, y: -600, width: 120, height: 40))
+        view.alpha = 1
+        view.isHidden = false
         view.isUserInteractionEnabled = false
         view.showsRouteButton = false
         window.addSubview(view)
