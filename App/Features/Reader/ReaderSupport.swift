@@ -413,28 +413,17 @@ final class ReaderLineMetrics {
     }
 }
 
-/// 接管断行权的容器。系统仍然负责字形排布和光标，但「这一行到哪儿为止」由我们说了算。
+/// 正文容器。
+///
+/// 这里原本重写了 `lineFragmentRect`，想在系统断行时把标点顶回上一行（避头尾）。
+/// 但它是在系统布局计算的中途把自己的结果塞回去 —— 等于在布局过程里修改布局输入，
+/// 容器初始宽度为 0 的那一瞬间系统会反复询问同一个字符位置，一层层叠上去就是栈溢出。
+/// 崩溃报告里同一地址出现四层、与系统帧交替，正是这个形状。
+///
+/// 断行接管已整体摘除：避头尾交给系统自带的 pushOut，稳定性优先。
 final class ReaderTextContainer: NSTextContainer {
+    /// 预留给将来用 CoreText 自绘时的测量器，目前不再参与布局。
     var metrics: ReaderLineMetrics?
-
-    override func lineFragmentRect(
-        forProposedRect proposedRect: CGRect,
-        at characterIndex: Int,
-        writingDirection baseWritingDirection: NSWritingDirection,
-        remaining remainingRect: UnsafeMutablePointer<CGRect>?
-    ) -> CGRect {
-        let base = super.lineFragmentRect(
-            forProposedRect: proposedRect,
-            at: characterIndex,
-            writingDirection: baseWritingDirection,
-            remaining: remainingRect
-        )
-        guard let metrics, base.width > 16 else { return base }
-        guard let width = metrics.narrowedWidth(lineStart: characterIndex, available: base.width) else {
-            return base
-        }
-        return CGRect(x: base.minX, y: base.minY, width: width, height: base.height)
-    }
 }
 
 // MARK: - 阅读页足迹

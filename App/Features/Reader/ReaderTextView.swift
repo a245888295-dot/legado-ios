@@ -65,6 +65,8 @@ private final class ReaderLayoutTextView: UITextView {
 
     private var underlineLayer: CAShapeLayer?
     private var underlineKey = 0
+    /// 防止同一轮布局重复派发上报任务。
+    private var layoutReportScheduled = false
 
     /// 惰性创建：`init(usingTextLayoutManager:)` 不是 designated，没法在子类里重写，
     /// 所以放到首次布局时挂上去，两条初始化路径都能覆盖到。
@@ -84,12 +86,30 @@ private final class ReaderLayoutTextView: UITextView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        rebuildUnderlineIfNeeded()
         guard bounds.width > 0, bounds.height > 0,
               bounds.size != reportedSize || contentSize != reportedContentSize else { return }
         reportedSize = bounds.size
         reportedContentSize = contentSize
-        onLayout?(self)
+        scheduleLayoutReport()
+    }
+
+    /// 把「取分页 + 画下划线」挪出布局栈。
+    ///
+    /// 这里是这次 TXT 闪退的根因：`onLayout` 会一路走到 `ensureLayout(for:)`，
+    /// 而它是在 `layoutSubviews` 的栈里被同步调用的 —— 一旦这次布局被判定失效，
+    /// 系统立刻重入 `layoutSubviews`，再同步调 `ensureLayout`，如此一层层叠上去，
+    /// 直到栈被撑爆（崩溃报告里同一地址出现四层、与系统帧交替，正是这个形状）。
+    /// 改成一帧之后再取，就永远不可能重入布局栈。
+    private func scheduleLayoutReport() {
+        guard !layoutReportScheduled else { return }
+        layoutReportScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.layoutReportScheduled = false
+            guard self.window != nil, self.bounds.width > 0 else { return }
+            self.rebuildUnderlineIfNeeded()
+            self.onLayout?(self)
+        }
     }
 
     /// 排版属性变了（改下划线样式、行距、字距、主题色）时强制重绘一次。

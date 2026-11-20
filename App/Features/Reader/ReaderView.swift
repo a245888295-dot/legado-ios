@@ -87,8 +87,6 @@ struct ReaderView: View {
     @AppStorage("typographyModelV3") private var typographyModelMigrated = false
     /// 新版排版引擎的开关（崩溃后会自动关掉，修好后可在这里重新打开）。
     @AppStorage("readerEngineDisabledV1") private var engineDisabled = false
-    /// 实验：把断行权从系统手里接管过来。默认关闭，因为它要重写系统的行片段计算。
-    @AppStorage("readerTakeoverLineBreakV1") private var takeoverLineBreak = false
     @AppStorage("headerPaddingBottom") private var headerPaddingBottom = 0.0
     @AppStorage("headerPaddingLeft") private var headerPaddingLeft = 16.0
     @AppStorage("headerPaddingRight") private var headerPaddingRight = 16.0
@@ -1478,18 +1476,6 @@ struct ReaderView: View {
                     ))
                 } footer: {
                     Text("负责整页对齐、标题孤行保护和比例化行距。如果某次进入阅读页闪退了，它会自动关掉以保证还能正常读书，修好后在这里重新打开。")
-                }
-                Section {
-                    Toggle("接管断行（实验）", isOn: Binding(
-                        get: { takeoverLineBreak },
-                        set: { value in
-                            takeoverLineBreak = value
-                            readerRenderRevision &+= 1
-                        }
-                    ))
-                    .disabled(engineDisabled)
-                } footer: {
-                    Text("让中文标点严格不掉到行首。默认关：它要改写系统的行片段计算，某些极端排版（整行标点、超长英文）会让布局器断言而闪退。关了以后靠苹果自带的 pushOut，常见标点仍会被推到上一行。")
                 }
                 Section("文字") {
                     valueSlider("字号", value: $fontSize, range: 5...50, format: { "\(Int($0))" })
