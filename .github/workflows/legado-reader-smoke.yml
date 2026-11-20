@@ -1,0 +1,66 @@
+name: Reader smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "只跑某个用例（留空跑两个默认用例）"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Pick simulator
+        id: sim
+        run: |
+          xcrun simctl list devices available | head -40
+          SIM=$(xcrun simctl list devices available | grep -o 'iPhone [0-9][0-9A-Za-z ]*(' | head -1 | sed 's/($//' | sed 's/ *$//')
+          echo "name=$SIM" >> "$GITHUB_OUTPUT"
+          echo "SIM=$SIM"
+
+      - name: Run reader UI tests
+        run: |
+          set -o pipefail
+          SIM="${{ steps.sim.outputs.name }}"
+          ONLY="${{ inputs.only }}"
+          if [ -z "$ONLY" ]; then
+            ONLY="LegadoReaderUITests/ReaderScrollGestureTests/testLargeFontPagedReadingKeepsWholeLinesWhenTurningPages,LegadoReaderUITests/ReaderScrollGestureTests/testPagedReadingReportsPageCountAndTurnsWithinTheSameChapter"
+          fi
+          ARGS=""
+          IFS=',' read -ra ITEMS <<< "$ONLY"
+          for t in "${ITEMS[@]}"; do ARGS="$ARGS -only-testing:$t"; done
+          echo "ARGS=$ARGS"
+          xcodebuild test -project Legado.xcodeproj -scheme LegadoReaderUITests \
+            -destination "platform=iOS Simulator,name=$SIM" \
+            -derivedDataPath build/SimDerivedData \
+            -resultBundlePath /tmp/reader.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            $ARGS 2>&1 | tee /tmp/test.log | tail -150
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reader-test-log
+          path: /tmp/test.log
+          if-no-files-found: warn
+
+      - name: Upload result bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reader-xcresult
+          path: /tmp/reader.xcresult
+          if-no-files-found: warn
