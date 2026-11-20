@@ -540,6 +540,53 @@ private final class ReaderScrollCanvas: UIView {
         let origin = CGPoint(x: block.chapter.left, y: -block.top)
         block.chapter.manager.drawBackground(forGlyphRange: block.glyphRange, at: origin)
         block.chapter.manager.drawGlyphs(forGlyphRange: block.glyphRange, at: origin)
+        drawUnderlines(block: block, origin: origin)
+    }
+
+    /// 逐行画下划线：离字底留一点空、颜色比正文浅、行末画到版心边界。
+    private func drawUnderlines(block: ReaderScrollBlock, origin: CGPoint) {
+        let layout = block.chapter
+        let manager = layout.manager
+        let storage = layout.storage
+        guard storage.length > 0, block.glyphRange.length > 0 else { return }
+
+        let path = UIBezierPath()
+        var color: UIColor?
+        var mode = 0
+        var width: CGFloat = 1.4
+        var glyphIndex = block.glyphRange.location
+        let end = NSMaxRange(block.glyphRange)
+
+        while glyphIndex < end {
+            var lineRange = NSRange()
+            let rect = manager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: &lineRange)
+            let used = manager.lineFragmentUsedRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+            guard lineRange.length > 0 else { glyphIndex += 1; continue }
+            glyphIndex = NSMaxRange(lineRange)
+            guard used.width > 1 else { continue }
+            let charRange = manager.characterRange(forGlyphRange: lineRange, actualGlyphRange: nil)
+            guard charRange.length > 0, charRange.location < storage.length else { continue }
+            let attrs = storage.attributes(at: charRange.location, effectiveRange: nil)
+            guard let mark = attrs[.readerUnderline] as? Int else { continue }
+            let font = (attrs[.font] as? UIFont) ?? UIFont.systemFont(ofSize: 17)
+            let spacing = (attrs[.paragraphStyle] as? NSParagraphStyle)?.lineSpacing ?? 0
+            let y = origin.y + rect.minY + font.lineHeight + ReaderUnderlinePainter.gap(lineSpacing: spacing)
+            path.move(to: CGPoint(x: origin.x + used.minX, y: y))
+            path.addLine(to: CGPoint(x: origin.x + used.maxX, y: y))
+            if color == nil { color = attrs[.foregroundColor] as? UIColor }
+            mode = mark
+            width = ReaderUnderlinePainter.lineWidth(pointSize: font.pointSize)
+        }
+
+        guard let color, !path.isEmpty else { return }
+        ReaderUnderlinePainter.strokeColor(color).setStroke()
+        path.lineWidth = width
+        path.lineCapStyle = .round
+        if mode == 2 {
+            let dash: [CGFloat] = [0.1, 3.6]
+            path.setLineDash(dash, count: dash.count, phase: 0)
+        }
+        path.stroke()
     }
 }
 
@@ -565,10 +612,7 @@ struct ReaderTypography {
             .foregroundColor: c.foregroundColor, .paragraphStyle: paragraph
         ]
         if c.underlineMode != 0 {
-            var underline = NSUnderlineStyle.single
-            if c.underlineMode == 2 { underline.insert(.patternDash) }
-            body[.underlineStyle] = underline.rawValue
-            body[.underlineColor] = c.foregroundColor
+            body[.readerUnderline] = c.underlineMode
         }
         bodyAttributes = body
         let headingFont = ReaderFontStore.font(at: c.fontPath, size: CGFloat(max(5, c.fontSize + c.titleSize)), weight: c.fontWeight)

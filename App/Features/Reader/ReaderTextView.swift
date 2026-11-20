@@ -41,13 +41,99 @@ private final class ReaderLayoutTextView: UITextView {
     private var reportedSize = CGSize.zero
     private var reportedContentSize = CGSize.zero
 
+    private let underlineLayer = CAShapeLayer()
+    private var underlineKey = 0
+
+    override init(frame: CGRect, textContainer: NSTextContainer?) {
+        super.init(frame: frame, textContainer: textContainer)
+        installUnderlineLayer()
+    }
+
+    @available(iOS 16.0, *)
+    override init(usingTextLayoutManager: Bool) {
+        super.init(usingTextLayoutManager: usingTextLayoutManager)
+        installUnderlineLayer()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private func installUnderlineLayer() {
+        underlineLayer.fillColor = nil
+        underlineLayer.lineCap = .round
+        underlineLayer.lineJoin = .round
+        underlineLayer.zPosition = 1_000
+        underlineLayer.contentsScale = UIScreen.main.scale
+        layer.addSublayer(underlineLayer)
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
+        rebuildUnderlineIfNeeded()
         guard bounds.width > 0, bounds.height > 0,
               bounds.size != reportedSize || contentSize != reportedContentSize else { return }
         reportedSize = bounds.size
         reportedContentSize = contentSize
         onLayout?(self)
+    }
+
+    private func rebuildUnderlineIfNeeded() {
+        guard let manager = layoutManager, let storage = textStorage else {
+            underlineLayer.path = nil
+            return
+        }
+        let fontSize = storage.length > 0
+            ? ((storage.attribute(.font, at: 0, effectiveRange: nil) as? UIFont)?.pointSize ?? 0)
+            : 0
+        let key = storage.string.hashValue &+ Int(fontSize) &* 7 &+ Int(bounds.width) &* 131 &+ Int(bounds.height)
+        guard key != underlineKey else { return }
+        underlineKey = key
+        rebuildUnderline(manager: manager, storage: storage)
+    }
+
+    private func rebuildUnderline(manager: NSLayoutManager, storage: NSTextStorage) {
+        guard manager.numberOfGlyphs > 0 else {
+            underlineLayer.path = nil
+            return
+        }
+        let origin = CGPoint(x: textContainerInset.left, y: textContainerInset.top)
+        let path = UIBezierPath()
+        var color: UIColor?
+        var mode = 0
+        var width: CGFloat = 1.4
+        var glyphIndex = 0
+        let end = manager.numberOfGlyphs
+
+        while glyphIndex < end {
+            var lineRange = NSRange()
+            let rect = manager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: &lineRange)
+            let used = manager.lineFragmentUsedRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+            guard lineRange.length > 0 else { glyphIndex += 1; continue }
+            glyphIndex = NSMaxRange(lineRange)
+            guard used.width > 1 else { continue }
+            let charRange = manager.characterRange(forGlyphRange: lineRange, actualGlyphRange: nil)
+            guard charRange.length > 0, charRange.location < storage.length else { continue }
+            let attrs = storage.attributes(at: charRange.location, effectiveRange: nil)
+            guard let mark = attrs[.readerUnderline] as? Int else { continue }
+            let font = (attrs[.font] as? UIFont) ?? UIFont.systemFont(ofSize: 17)
+            let spacing = (attrs[.paragraphStyle] as? NSParagraphStyle)?.lineSpacing ?? 0
+            let y = origin.y + rect.minY + font.lineHeight + ReaderUnderlinePainter.gap(lineSpacing: spacing)
+            path.move(to: CGPoint(x: origin.x + used.minX, y: y))
+            path.addLine(to: CGPoint(x: origin.x + used.maxX, y: y))
+            if color == nil { color = attrs[.foregroundColor] as? UIColor }
+            mode = mark
+            width = ReaderUnderlinePainter.lineWidth(pointSize: font.pointSize)
+        }
+
+        guard let color, !path.isEmpty else {
+            underlineLayer.path = nil
+            return
+        }
+        let size = contentSize
+        underlineLayer.frame = CGRect(origin: .zero, size: CGSize(width: max(size.width, bounds.width), height: max(size.height, bounds.height)))
+        underlineLayer.path = path.cgPath
+        underlineLayer.strokeColor = ReaderUnderlinePainter.strokeColor(color).cgColor
+        underlineLayer.lineWidth = width
+        underlineLayer.lineDashPattern = mode == 2 ? [0.1, 3.6] as [NSNumber] : nil
     }
 }
 
@@ -115,7 +201,7 @@ struct ReaderTextView: UIViewRepresentable {
         if #available(iOS 16.0, *) {
             view = ReaderLayoutTextView(usingTextLayoutManager: false)
         } else {
-            view = ReaderLayoutTextView(frame: .zero)
+            view = ReaderLayoutTextView(frame: .zero, textContainer: nil)
         }
         view.onLayout = { [weak coordinator = context.coordinator] view in
             coordinator?.reportPage(in: view)

@@ -86,3 +86,24 @@ struct ReaderMenuDismissShape: Shape {
 
     static func restoreApplicationDefault() { apply("0") }
 }
+
+extension NSAttributedString.Key {
+    /// 标记这一段正文需要自绘下划线。值存 underlineMode（1 实线 / 2 点线）。
+    /// 不交给 TextKit 画：它紧贴字底、颜色跟正文一样、行末还会提前截断。
+    static let readerUnderline = NSAttributedString.Key("LegadoReaderUnderline")
+}
+
+enum ReaderUnderlinePainter {
+    /// 下划线到字底的空隙。按行距取三成，行距越大离得越开，视觉上始终居中偏上。
+    static func gap(lineSpacing: CGFloat) -> CGFloat {
+        max(2.0, lineSpacing * 0.32)
+    }
+
+    static func lineWidth(pointSize: CGFloat) -> CGFloat {
+        max(1.1, min(1.8, pointSize * 0.06))
+    }
+
+    static func strokeColor(_ foreground: UIColor) -> UIColor {
+        foreground.withAlphaComponent(0.45)
+    }
+}
