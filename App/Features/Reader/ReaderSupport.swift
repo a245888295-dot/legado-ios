@@ -158,6 +158,8 @@ final class VolumeKeyPager: NSObject, @unchecked Sendable {
     private var lastFire: CFTimeInterval = 0
     /// 回写音量期间收到的通知要丢掉，否则会自己翻自己。
     private var suppressUntil: CFTimeInterval = 0
+    /// 最近一次回写的时间。音量顶到边界时通知里的数值不变，只能靠「是不是刚回写过」来区分回声与真按键。
+    private var lastRestoreAt: CFTimeInterval = 0
 
     private override init() { super.init() }
 
@@ -171,8 +173,9 @@ final class VolumeKeyPager: NSObject, @unchecked Sendable {
         isActive = true
 
         let session = AVAudioSession.sharedInstance()
-        // playback + mixWithOthers：既让会话 active，又不会掐掉用户正在放的音乐。
-        try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        // ambient：按苹果定义就与别的 App 混音，绝不会打断后台音乐；
+        // 我们只需要「会话处于活跃状态」来接收音量事件，不需要真的出声。
+        try? session.setCategory(.ambient, mode: .default, options: [.mixWithOthers])
         try? session.setActive(true, options: [])
         startSilentLoop()
         installVolumeView()
@@ -186,9 +189,13 @@ final class VolumeKeyPager: NSObject, @unchecked Sendable {
             )
         }
 
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleInterruption(_:)), name: AVAudioSession.interruptionNotification, object: nil
+        )
+
         volumeObservation = session.observe(\.outputVolume, options: [.new]) { _, change in
             guard let value = change.newValue else { return }
-            DispatchQueue.main.async { VolumeKeyPager.shared.receive(volume: value, reason: nil, sequence: nil) }
+            DispatchQueue.main.async { VolumeKeyPager.shared.receive(volume: value, reason: nil, sequence: nil, category: nil) }
         }
     }
 
@@ -214,12 +221,13 @@ final class VolumeKeyPager: NSObject, @unchecked Sendable {
         let reason = (info?["Reason"] as? String)
             ?? (info?["AVSystemController_AudioVolumeChangeReasonNotificationParameter"] as? String)
         let sequence = (info?["SequenceNumber"] as? NSNumber)?.intValue
+        let category = info?["AudioCategory"] as? String
         DispatchQueue.main.async { [weak self] in
-            self?.receive(volume: volume, reason: reason, sequence: sequence)
+            self?.receive(volume: volume, reason: reason, sequence: sequence, category: category)
         }
     }
 
-    private func receive(volume: Float?, reason: String?, sequence: Int?) {
+    private func receive(volume: Float?, reason: String?, sequence: Int?, category: String?) {
         // 开关随时可能被改，这里每次都读；关掉就完全不动系统音量。
         guard isActive, ReaderVolumeKeySetting.isEnabled else { return }
         guard let current = volume else { return }
@@ -238,10 +246,10 @@ final class VolumeKeyPager: NSObject, @unchecked Sendable {
         let rising: Bool
         if abs(current - previous) > 0.004 {
             rising = current > previous
-        } else if previous >= 0.999 {
+        } else if previous >= 0.999, now - lastRestoreAt > 0.6 {
             // 音量已经到顶，再按只能是音量+（通知里的数值不会变）。
             rising = true
-        } else if previous <= 0.001 {
+        } else if previous <= 0.001, now - lastRestoreAt > 0.6 {
             rising = false
         } else {
             lastVolume = current
@@ -257,18 +265,63 @@ final class VolumeKeyPager: NSObject, @unchecked Sendable {
             object: nil,
             userInfo: ["direction": VolumeKeyPager.direction(volumeRising: rising)]
         )
-        restore(to: previous)
+        restore(to: previous, category: category)
     }
 
-    private func restore(to value: Float) {
-        suppressUntil = CACurrentMediaTime() + 0.2
-        lastVolume = value
-        let ok = setVolume(value)
-        note("回写 \(value) \(ok ? "成功" : "失败")")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-            guard let self, self.isActive else { return }
-            self.lastVolume = AVAudioSession.sharedInstance().outputVolume
+    /// 别的 App 抢走音频（比如你开始放歌）会把我们的会话打断，恢复后要重新激活，
+    /// 否则静音循环停了，音量事件也就跟着断了。
+    @objc private func handleInterruption(_ notification: Notification) {
+        guard let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+        guard isActive else { return }
+        switch type {
+        case .began:
+            note("音频会话被中断")
+        case .ended:
+            let session = AVAudioSession.sharedInstance()
+            try? session.setCategory(.ambient, mode: .default, options: [.mixWithOthers])
+            try? session.setActive(true, options: [])
+            if silentPlayer?.isPlaying != true { silentPlayer?.play() }
+            note("音频会话已恢复")
+        @unknown default:
+            break
         }
+    }
+
+    /// 把音量写回去。
+    ///
+    /// 关键点：光给 `MPVolumeSlider.value` 赋值，系统很多时候不买账（滑块内部状态是滞后的），
+    /// 所以先直写私有接口，再用滑块同步一次并主动发一次 action。两路都试，外加延迟再写一次，
+    /// 避免系统把「按键那一刻的音量」在我们之后才落盘，造成音量逐次上漂。
+    private func restore(to value: Float, category: String?) {
+        suppressUntil = CACurrentMediaTime() + 0.3
+        lastRestoreAt = CACurrentMediaTime()
+        lastVolume = value
+        applyVolume(value, category: category)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self, self.isActive else { return }
+            self.applyVolume(value, category: category)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                guard let self, self.isActive else { return }
+                let actual = AVAudioSession.sharedInstance().outputVolume
+                if actual > 0.01, abs(actual - value) > 0.012 {
+                    self.note("音量漂了 \(actual) → \(value)，再写一次")
+                    self.applyVolume(value, category: category)
+                }
+            }
+        }
+    }
+
+    private func applyVolume(_ value: Float, category: String?) {
+        // 私有接口直写系统音量，按按键时那条通知里的类别写，避免写错通道（媒体音量 / 铃声音量）。
+        let direct = Self.setSystemVolume(value, category: category ?? "Audio/Video")
+        // 滑块只代表媒体音量，类别不是媒体时不要用它去写。
+        if category == nil || category == "Audio/Video", let slider = volumeSlider() {
+            slider.value = value
+            // 只赋值常常不生效，补一次 action 让系统真正采纳。
+            slider.sendActions(for: .touchUpInside)
+        }
+        note("回写 \(value) 直写=\(direct ? "成功" : "失败")")
     }
 
     // MARK: 音量写入
@@ -299,15 +352,6 @@ final class VolumeKeyPager: NSObject, @unchecked Sendable {
         volumeView?.subviews.compactMap { $0 as? UISlider }.first
     }
 
-    @discardableResult
-    private func setVolume(_ value: Float) -> Bool {
-        if let slider = volumeSlider() {
-            slider.value = value
-            return true
-        }
-        return Self.setSystemVolume(value)
-    }
-
     private static func keyWindow() -> UIWindow? {
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         for scene in scenes {
@@ -317,7 +361,7 @@ final class VolumeKeyPager: NSObject, @unchecked Sendable {
     }
 
     /// 备用通道：私有方法 `AVSystemController.setVolumeTo:forCategory:`。
-    private static func setSystemVolume(_ value: Float) -> Bool {
+    private static func setSystemVolume(_ value: Float, category: String) -> Bool {
         let sharedSelector = NSSelectorFromString("sharedAVSystemController")
         guard let cls = NSClassFromString("AVSystemController") as? NSObject.Type,
               let factory = class_getClassMethod(cls, sharedSelector) else { return false }
@@ -329,7 +373,7 @@ final class VolumeKeyPager: NSObject, @unchecked Sendable {
         if let method = class_getInstanceMethod(controllerClass, twoArg) {
             typealias Fn = @convention(c) (AnyObject, Selector, Float, AnyObject) -> Bool
             let fn = unsafeBitCast(method_getImplementation(method), to: Fn.self)
-            if fn(controller, twoArg, value, "Audio/Video" as AnyObject) { return true }
+            if fn(controller, twoArg, value, category as AnyObject) { return true }
         }
         return false
     }
