@@ -94,15 +94,15 @@ extension NSAttributedString.Key {
 }
 
 enum ReaderUnderlinePainter {
-    /// 下划线到字底的空隙：微信读书实测约 0.18–0.2 个字高（20pt 字离 3.5pt），
-    /// 取 0.22 留一点余量，随字号缩放。
+    /// 下划线到字底的空隙。这里从 em 框底算，汉字墨迹底比 em 底高约 0.1 em，
+    /// 所以取 0.10 → 视觉上离字底约 0.2 个字高（微信读书实测 0.18–0.2）。
     static func gap(pointSize: CGFloat) -> CGFloat {
-        max(2.5, pointSize * 0.22)
+        max(2.0, pointSize * 0.10)
     }
 
     /// 线本身要细而有存在感：约 0.045 个字高，实机上就是 1pt 上下。
     static func lineWidth(pointSize: CGFloat) -> CGFloat {
-        max(0.9, min(1.6, pointSize * 0.045))
+        max(0.9, min(1.1, pointSize * 0.045))
     }
 
     /// 短横虚线，实线段与空白约 1:2.2（微信读书 4px 线 + 8px 空，比例一致），

@@ -64,6 +64,10 @@ struct ReaderView: View {
     @AppStorage("textSize") private var fontSize = 20.0
     @AppStorage("letterSpacing") private var letterSpacing = 0.1
     @AppStorage("lineSpacingExtra") private var lineSpacing = 12.0
+    /// 行距倍数（相对字号）。旧版本的 lineSpacing 是绝对 pt，字号一改就失真，这里换成比例。
+    @AppStorage("lineHeightMultiple") private var lineHeightMultiple = 1.8
+    /// 段距倍数（相对字号），0.6 字 ≈ 移动阅读常见的半行空。
+    @AppStorage("paraSpacingMultiple") private var paraSpacingMultiple = 0.6
     @AppStorage("paragraphSpacing") private var paragraphSpacing = 2.0
     @AppStorage("paragraphIndent") private var paragraphIndent = "　　"
     @AppStorage("paddingLeft") private var paddingLeft = 16.0
@@ -612,8 +616,8 @@ struct ReaderView: View {
             fontSize: fontSize,
             fontPath: fontPath,
             letterSpacing: letterSpacing,
-            lineSpacing: lineSpacing,
-            paragraphSpacing: paragraphSpacing,
+            lineSpacing: effectiveLineSpacing,
+            paragraphSpacing: effectiveParagraphSpacing,
             paragraphIndent: paragraphIndent,
             paddingLeft: paddingLeft,
             paddingRight: paddingRight,
@@ -1184,10 +1188,20 @@ struct ReaderView: View {
     }
 
 
+    /// 行距倍数 → 行间额外间距（pt）。系统字体行高约 1.19 em，超出部分才是额外间距。
+    private var effectiveLineSpacing: Double {
+        max(0, (lineHeightMultiple - 1.19) * fontSize)
+    }
+
+    /// 段距倍数 → 段间距（pt），跟着字号缩放。
+    private var effectiveParagraphSpacing: Double {
+        max(0, paraSpacingMultiple * fontSize)
+    }
+
     private var styleControls: some View {
         ReadingNavigationStack {
             Form {
-                Section("快速排版") {
+                Section {
                     HStack(spacing: 12) {
                         Button {
                             fontSize = max(5, fontSize - 1)
@@ -1219,11 +1233,15 @@ struct ReaderView: View {
                         Text("行距")
                             .font(.subheadline)
                         Spacer(minLength: 8)
-                        readerChoiceChip("紧凑", selected: lineSpacing <= 7) { lineSpacing = 6 }
-                        readerChoiceChip("标准", selected: lineSpacing > 7 && lineSpacing < 18) { lineSpacing = 12 }
-                        readerChoiceChip("宽松", selected: lineSpacing >= 18) { lineSpacing = 22 }
+                        readerChoiceChip("紧凑", selected: lineHeightMultiple < 1.7) { lineHeightMultiple = 1.55 }
+                        readerChoiceChip("标准", selected: lineHeightMultiple >= 1.7 && lineHeightMultiple < 1.95) { lineHeightMultiple = 1.8 }
+                        readerChoiceChip("宽松", selected: lineHeightMultiple >= 1.95) { lineHeightMultiple = 2.05 }
                     }
                     Toggle("两端对齐", isOn: $fullJustify)
+                } header: {
+                    Text("排版")
+                } footer: {
+                    Text("行距按字号等比缩放，改字号不会把行挤在一起。其余参数已按移动阅读的常规值设好，一般不用动。")
                 }
 
                 Section("阅读背景") {
@@ -1295,12 +1313,94 @@ struct ReaderView: View {
                         Text(backgroundError).font(.footnote).foregroundStyle(.red)
                     }
                 }
+                Section("翻页动画") {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            ForEach(Self.pageAnimationChoices, id: \.0) { choice in
+                                Button {
+                                    pageAnimation = choice.value
+                                } label: {
+                                    VStack(spacing: 6) {
+                                        Image(systemName: choice.icon)
+                                            .font(.headline)
+                                        Text(choice.title)
+                                            .font(.caption2)
+                                    }
+                                    .foregroundStyle(pageAnimation == choice.value ? ReadingTheme.onAccent : Color.primary)
+                                    .frame(width: 58, height: 54)
+                                    .background(
+                                        pageAnimation == choice.value ? ReadingTheme.accentFill : Color.secondary.opacity(0.1),
+                                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    )
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                            .strokeBorder(pageAnimation == choice.value ? ReadingTheme.selectionBorder : .clear, lineWidth: 1)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityAddTraits(pageAnimation == choice.value ? .isSelected : [])
+                            }
+                        }
+                    }
+                    Text(pageAnimation == 3
+                         ? "滚动模式连续滚动；其余模式按整屏翻页。左右滑动或点击左右三分之一区域翻页，点击中间区域打开菜单。"
+                         : "当前模式按整屏翻页；左右滑动或点击左右三分之一区域翻页，点击中间区域打开菜单。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Section {
+                    NavigationLink {
+                        advancedStyleControls
+                    } label: {
+                        Label("高级排版", systemImage: "slider.horizontal.3")
+                    }
+                } footer: {
+                    Text("字间距、段距、缩进、字重、下划线、标题样式、正文边距、页眉页脚。")
+                }
+            }
+            .navigationTitle("阅读样式")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { showsStyleControls = false }
+                }
+            }
+        }
+        .readingPhotoPicker(isPresented: $showsBackgroundPicker) { data in
+            backgroundError = nil
+            do {
+                backgroundImage = try ReaderBackgroundStore.save(data)
+                useBackgroundImage = true
+            } catch {
+                backgroundError = error.localizedDescription
+            }
+        } onError: { error in
+            backgroundError = error.localizedDescription
+        }
+        .fileImporter(
+            isPresented: $showsFontImporter,
+            allowedContentTypes: [.font, .data],
+            allowsMultipleSelection: false
+        ) { result in
+            fontError = nil
+            do {
+                guard let source = try result.get().first else { return }
+                fontPath = try ReaderFontStore.install(from: source)
+            } catch {
+                fontError = error.localizedDescription
+            }
+        }
+        .readingPresentationDetents([.medium, .large])
+        .readingPresentationDragIndicator()
+    }
 
+    private var advancedStyleControls: some View {
+        Form {
                 Section("文字") {
                     valueSlider("字号", value: $fontSize, range: 5...50, format: { "\(Int($0))" })
                     valueSlider("字间距", value: $letterSpacing, range: -0.5...0.5, step: 0.01, format: { String(format: "%.2f", $0) })
-                    valueSlider("行间距", value: $lineSpacing, range: 0...50, format: { "\(Int($0))" })
-                    valueSlider("段距", value: $paragraphSpacing, range: 0...50, format: { String(format: "%.1f", $0) })
+                    valueSlider("行距倍数", value: $lineHeightMultiple, range: 1.2...2.6, step: 0.05, format: { String(format: "%.2f 倍", $0) })
+                    valueSlider("段距", value: $paraSpacingMultiple, range: 0...2, step: 0.05, format: { String(format: "%.2f 字", $0) })
                     Picker("字重", selection: $fontWeight) {
                         Text("正常").tag(0)
                         Text("粗体").tag(1)
@@ -1349,42 +1449,6 @@ struct ReaderView: View {
                     valueSlider("标题下间距", value: $titleBottomSpacing, range: 0...100, format: { "\(Int($0))" })
                 }
 
-                Section("翻页动画") {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 10) {
-                            ForEach(Self.pageAnimationChoices, id: \.0) { choice in
-                                Button {
-                                    pageAnimation = choice.value
-                                } label: {
-                                    VStack(spacing: 6) {
-                                        Image(systemName: choice.icon)
-                                            .font(.headline)
-                                        Text(choice.title)
-                                            .font(.caption2)
-                                    }
-                                    .foregroundStyle(pageAnimation == choice.value ? ReadingTheme.onAccent : Color.primary)
-                                    .frame(width: 58, height: 54)
-                                    .background(
-                                        pageAnimation == choice.value ? ReadingTheme.accentFill : Color.secondary.opacity(0.1),
-                                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    )
-                                    .overlay {
-                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                            .strokeBorder(pageAnimation == choice.value ? ReadingTheme.selectionBorder : .clear, lineWidth: 1)
-                                    }
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityAddTraits(pageAnimation == choice.value ? .isSelected : [])
-                            }
-                        }
-                    }
-                    Text(pageAnimation == 3
-                         ? "滚动模式连续滚动；其余模式按整屏翻页。左右滑动或点击左右三分之一区域翻页，点击中间区域打开菜单。"
-                         : "当前模式按整屏翻页；左右滑动或点击左右三分之一区域翻页，点击中间区域打开菜单。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
                 Section("正文边距") {
                     valueSlider("左边距", value: $paddingLeft, range: 0...100, format: { "\(Int($0))" })
                     valueSlider("右边距", value: $paddingRight, range: 0...100, format: { "\(Int($0))" })
@@ -1425,41 +1489,9 @@ struct ReaderView: View {
                     valueSlider("上边距", value: $footerPaddingTop, range: 0...100, format: { "\(Int($0))" })
                     valueSlider("下边距", value: $footerPaddingBottom, range: 0...100, format: { "\(Int($0))" })
                 }
-            }
-            .navigationTitle("阅读样式")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { showsStyleControls = false }
-                }
-            }
         }
-        .readingPhotoPicker(isPresented: $showsBackgroundPicker) { data in
-            backgroundError = nil
-            do {
-                backgroundImage = try ReaderBackgroundStore.save(data)
-                useBackgroundImage = true
-            } catch {
-                backgroundError = error.localizedDescription
-            }
-        } onError: { error in
-            backgroundError = error.localizedDescription
-        }
-        .fileImporter(
-            isPresented: $showsFontImporter,
-            allowedContentTypes: [.font, .data],
-            allowsMultipleSelection: false
-        ) { result in
-            fontError = nil
-            do {
-                guard let source = try result.get().first else { return }
-                fontPath = try ReaderFontStore.install(from: source)
-            } catch {
-                fontError = error.localizedDescription
-            }
-        }
-        .readingPresentationDetents([.medium])
-        .readingPresentationDragIndicator()
+        .navigationTitle("高级排版")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private static let pageAnimationChoices: [(value: Int, title: String, icon: String)] = [
