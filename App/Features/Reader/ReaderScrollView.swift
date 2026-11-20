@@ -570,7 +570,9 @@ private final class ReaderScrollCanvas: UIView {
             guard let mark = attrs[.readerUnderline] as? Int else { continue }
             let font = (attrs[.font] as? UIFont) ?? UIFont.systemFont(ofSize: 17)
             let spacing = (attrs[.paragraphStyle] as? NSParagraphStyle)?.lineSpacing ?? 0
-            let y = origin.y + rect.minY + font.lineHeight + ReaderUnderlinePainter.gap(lineSpacing: spacing)
+            // 字底 = 基线 - descender（descender 是负数），跟字号、字体、行距都跟着走。
+            let bottom = rect.minY + font.ascender - font.descender
+            let y = origin.y + bottom + ReaderUnderlinePainter.gap(lineSpacing: spacing)
             path.move(to: CGPoint(x: origin.x + used.minX, y: y))
             path.addLine(to: CGPoint(x: origin.x + used.maxX, y: y))
             if color == nil { color = attrs[.foregroundColor] as? UIColor }

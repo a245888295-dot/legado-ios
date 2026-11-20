@@ -41,29 +41,23 @@ private final class ReaderLayoutTextView: UITextView {
     private var reportedSize = CGSize.zero
     private var reportedContentSize = CGSize.zero
 
-    private let underlineLayer = CAShapeLayer()
+    private var underlineLayer: CAShapeLayer?
     private var underlineKey = 0
 
-    override init(frame: CGRect, textContainer: NSTextContainer?) {
-        super.init(frame: frame, textContainer: textContainer)
-        installUnderlineLayer()
-    }
-
-    @available(iOS 16.0, *)
-    override init(usingTextLayoutManager: Bool) {
-        super.init(usingTextLayoutManager: usingTextLayoutManager)
-        installUnderlineLayer()
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    private func installUnderlineLayer() {
-        underlineLayer.fillColor = nil
-        underlineLayer.lineCap = .round
-        underlineLayer.lineJoin = .round
-        underlineLayer.zPosition = 1_000
-        underlineLayer.contentsScale = UIScreen.main.scale
-        layer.addSublayer(underlineLayer)
+    /// 惰性创建：`init(usingTextLayoutManager:)` 不是 designated，没法在子类里重写，
+    /// 所以放到首次布局时挂上去，两条初始化路径都能覆盖到。
+    @discardableResult
+    private func ensureUnderlineLayer() -> CAShapeLayer {
+        if let existing = underlineLayer { return existing }
+        let layer = CAShapeLayer()
+        layer.fillColor = nil
+        layer.lineCap = .round
+        layer.lineJoin = .round
+        layer.zPosition = 1_000
+        layer.contentsScale = UIScreen.main.scale
+        self.layer.addSublayer(layer)
+        underlineLayer = layer
+        return layer
     }
 
     override func layoutSubviews() {
@@ -77,10 +71,8 @@ private final class ReaderLayoutTextView: UITextView {
     }
 
     private func rebuildUnderlineIfNeeded() {
-        guard let manager = layoutManager, let storage = textStorage else {
-            underlineLayer.path = nil
-            return
-        }
+        let manager = layoutManager
+        let storage = textStorage
         let fontSize = storage.length > 0
             ? ((storage.attribute(.font, at: 0, effectiveRange: nil) as? UIFont)?.pointSize ?? 0)
             : 0
@@ -92,7 +84,7 @@ private final class ReaderLayoutTextView: UITextView {
 
     private func rebuildUnderline(manager: NSLayoutManager, storage: NSTextStorage) {
         guard manager.numberOfGlyphs > 0 else {
-            underlineLayer.path = nil
+            underlineLayer?.path = nil
             return
         }
         let origin = CGPoint(x: textContainerInset.left, y: textContainerInset.top)
@@ -116,7 +108,9 @@ private final class ReaderLayoutTextView: UITextView {
             guard let mark = attrs[.readerUnderline] as? Int else { continue }
             let font = (attrs[.font] as? UIFont) ?? UIFont.systemFont(ofSize: 17)
             let spacing = (attrs[.paragraphStyle] as? NSParagraphStyle)?.lineSpacing ?? 0
-            let y = origin.y + rect.minY + font.lineHeight + ReaderUnderlinePainter.gap(lineSpacing: spacing)
+            // 字底 = 基线 - descender（descender 是负数），跟字号、字体、行距都跟着走。
+            let bottom = rect.minY + font.ascender - font.descender
+            let y = origin.y + bottom + ReaderUnderlinePainter.gap(lineSpacing: spacing)
             path.move(to: CGPoint(x: origin.x + used.minX, y: y))
             path.addLine(to: CGPoint(x: origin.x + used.maxX, y: y))
             if color == nil { color = attrs[.foregroundColor] as? UIColor }
@@ -125,15 +119,19 @@ private final class ReaderLayoutTextView: UITextView {
         }
 
         guard let color, !path.isEmpty else {
-            underlineLayer.path = nil
+            underlineLayer?.path = nil
             return
         }
+        let layer = ensureUnderlineLayer()
         let size = contentSize
-        underlineLayer.frame = CGRect(origin: .zero, size: CGSize(width: max(size.width, bounds.width), height: max(size.height, bounds.height)))
-        underlineLayer.path = path.cgPath
-        underlineLayer.strokeColor = ReaderUnderlinePainter.strokeColor(color).cgColor
-        underlineLayer.lineWidth = width
-        underlineLayer.lineDashPattern = mode == 2 ? [0.1, 3.6] as [NSNumber] : nil
+        layer.frame = CGRect(origin: .zero, size: CGSize(
+            width: max(size.width, bounds.width),
+            height: max(size.height, bounds.height)
+        ))
+        layer.path = path.cgPath
+        layer.strokeColor = ReaderUnderlinePainter.strokeColor(color).cgColor
+        layer.lineWidth = width
+        layer.lineDashPattern = mode == 2 ? [0.1, 3.6] as [NSNumber] : nil
     }
 }
 
