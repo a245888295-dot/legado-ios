@@ -11,26 +11,48 @@ struct ReaderTextPage {
     @MainActor static func layout(in view: UITextView, height: CGFloat) -> [ReaderTextPage] {
         let manager = view.layoutManager
         manager.ensureLayout(for: view.textContainer)
-        var pages: [ReaderTextPage] = []
-        var startY: CGFloat = 0
-        var endY: CGFloat = 0
-        var startCharacter = 0
-        var endCharacter = 0
-        manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs)) {
+        let storage = view.textStorage
+        let totalGlyphs = manager.numberOfGlyphs
+        guard totalGlyphs > 0 else { return [] }
+
+        struct Line {
+            let location: Int
+            let end: Int
+            let minY: CGFloat
+            let maxY: CGFloat
+            let isHeading: Bool
+        }
+        var lines: [Line] = []
+        manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: totalGlyphs)) {
             rect, _, _, glyphs, _ in
             let characters = manager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
-            if endCharacter > startCharacter, rect.maxY - startY > height + 0.01 {
-                pages.append(.init(offset: startY, height: endY - startY,
-                                   characterRange: NSRange(location: startCharacter, length: endCharacter - startCharacter)))
-                startY = rect.minY
-                startCharacter = characters.location
-            }
-            endY = rect.maxY
-            endCharacter = NSMaxRange(characters)
+            guard characters.length > 0 else { return }
+            let isHeading = characters.location < storage.length
+                && storage.attribute(.readerHeading, at: characters.location, effectiveRange: nil) != nil
+            lines.append(.init(location: characters.location, end: NSMaxRange(characters),
+                               minY: rect.minY, maxY: rect.maxY, isHeading: isHeading))
         }
-        if endCharacter > startCharacter {
-            pages.append(.init(offset: startY, height: endY - startY,
-                               characterRange: NSRange(location: startCharacter, length: endCharacter - startCharacter)))
+        guard !lines.isEmpty else { return [] }
+
+        var pages: [ReaderTextPage] = []
+        var start = 0
+        while start < lines.count {
+            let top = lines[start].minY
+            var end = start
+            while end + 1 < lines.count, lines[end + 1].maxY - top <= height + 0.01 {
+                end += 1
+            }
+            // 标题不能孤零零留在页脚：宁可这一页少一行，把标题推到下一页开头。
+            if end > start, lines[end].isHeading, end + 1 < lines.count {
+                end -= 1
+            }
+            let location = lines[start].location
+            pages.append(.init(
+                offset: top,
+                height: lines[end].maxY - top,
+                characterRange: NSRange(location: location, length: max(lines[end].end - location, 1))
+            ))
+            start = end + 1
         }
         return pages
     }
@@ -96,7 +118,7 @@ private final class ReaderLayoutTextView: UITextView {
             if probe.isEmpty { probe = storage.attributes(at: 0, effectiveRange: nil) }
         }
         let mark = (probe[.readerUnderline] as? Int) ?? 0
-        let spacing = (probe[.paragraphStyle] as? NSParagraphStyle)?.lineSpacing ?? 0
+        let spacing = (probe[.paragraphStyle] as? NSParagraphStyle)?.minimumLineHeight ?? 0
         let kern = (probe[.kern] as? NSNumber)?.doubleValue ?? 0
         let colorKey = (probe[.foregroundColor] as? UIColor)?.hashValue ?? 0
         let key = storage.string.hashValue
@@ -179,8 +201,10 @@ struct ReaderTextView: UIViewRepresentable {
     let fontSize: Double
     let fontPath: String
     let letterSpacing: Double
-    let lineSpacing: Double
-    let paragraphSpacing: Double
+    /// 行高 / 字号。所有行距都由它乘出来，字号一改整篇等比跟随。
+    let lineHeightMultiple: Double
+    /// 段距 / 字号。
+    let paraSpacingMultiple: Double
     let paragraphIndent: String
     let paddingLeft: Double
     let paddingRight: Double
@@ -226,12 +250,16 @@ struct ReaderTextView: UIViewRepresentable {
     func makeUIView(context: Context) -> UITextView {
         // Pagination uses NSLayoutManager. Start in TextKit 1 rather than
         // switching a TextKit 2 view after its content size has been computed.
-        let view: ReaderLayoutTextView
-        if #available(iOS 16.0, *) {
-            view = ReaderLayoutTextView(usingTextLayoutManager: false)
-        } else {
-            view = ReaderLayoutTextView(frame: .zero, textContainer: nil)
-        }
+        // 自定义容器接管断行权：中文标点不会被顶到行首。
+        let container = ReaderTextContainer(size: CGSize(width: 0, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 4
+        container.widthTracksTextView = true
+        container.heightTracksTextView = false
+        let view = ReaderLayoutTextView(frame: .zero, textContainer: container)
+        let metrics = ReaderLineMetrics()
+        metrics.storage = view.textStorage
+        container.metrics = metrics
+        context.coordinator.lineMetrics = metrics
         view.onLayout = { [weak coordinator = context.coordinator] view in
             coordinator?.reportPage(in: view)
             coordinator?.reportPageRanges(in: view)
@@ -291,7 +319,7 @@ struct ReaderTextView: UIViewRepresentable {
         let adjacentContentKey = "\(showsPrevious)|\(previousTitle ?? "")|\(previousText)|\(showsContinuation)|\(continuationTitle ?? "")|\(continuationText)".hashValue
         let displaysTitle = titleMode != 2 || isVolume
         let titlePrefix = displaysTitle && !title.isEmpty ? title + "\n" : ""
-        let styleKey = "\(contentKey)|\(adjacentContentKey)|\(title)|\(isVolume)|\(fontSize)|\(fontPath)|\(letterSpacing)|\(lineSpacing)|\(paragraphSpacing)|\(paragraphIndent)|\(paddingLeft)|\(paddingRight)|\(paddingTop)|\(paddingBottom)|\(headerInset)|\(footerInset)|\(fontWeight)|\(titleMode)|\(titleSize)|\(titleTopSpacing)|\(titleBottomSpacing)|\(underlineMode)|\(isSelectable)|\(fullJustify)|\(effectivePageAnimation)|\(foregroundColor.hash)"
+        let styleKey = "\(contentKey)|\(adjacentContentKey)|\(title)|\(isVolume)|\(fontSize)|\(fontPath)|\(letterSpacing)|\(lineHeightMultiple)|\(paraSpacingMultiple)|\(paragraphIndent)|\(paddingLeft)|\(paddingRight)|\(paddingTop)|\(paddingBottom)|\(headerInset)|\(footerInset)|\(fontWeight)|\(titleMode)|\(titleSize)|\(titleTopSpacing)|\(titleBottomSpacing)|\(underlineMode)|\(isSelectable)|\(fullJustify)|\(effectivePageAnimation)|\(Int(view.bounds.height))|\(foregroundColor.hash)"
         if context.coordinator.styleKey != styleKey {
             if context.coordinator.shouldDeferRender(in: view) {
                 context.coordinator.needsDeferredRender = true
@@ -305,7 +333,16 @@ struct ReaderTextView: UIViewRepresentable {
             context.coordinator.primaryContentKey = primaryContentKey
             context.coordinator.styleKey = styleKey
             (view as? ReaderLayoutTextView)?.invalidateUnderline()
-            let typography = ReaderTypography(configuration: self)
+            let availableHeight = max(
+                view.bounds.height - view.textContainerInset.top - view.textContainerInset.bottom,
+                1
+            )
+            let typography = ReaderTypography(configuration: self, availableHeight: availableHeight)
+            let metrics = context.coordinator.lineMetrics
+            metrics?.indentWidth = typography.indentWidth
+            metrics?.invalidate()
+            context.coordinator.lastBuildHeight = view.bounds.height
+            context.coordinator.resetBuildHeightRetries()
             let bodyAttributes = typography.bodyAttributes
             let rendered = NSMutableAttributedString(string: "")
             context.coordinator.previousBodyStart = nil
@@ -419,6 +456,11 @@ struct ReaderTextView: UIViewRepresentable {
         private var pendingContinuationPosition: Int?
         var needsDeferredRender = false
         var isApplyingContent = false
+        var lineMetrics: ReaderLineMetrics?
+        /// 上一次真正按它排版的高度。行高要对齐成「页面高度 ÷ 整数行」，
+        /// 所以视图尺寸定下来之后必须按新高度重排一次。
+        var lastBuildHeight: CGFloat = 0
+        private var buildHeightRetries = 0
         private var isTurningPage = false
         private var isRenderingAutoPage = false
         private var lastReportedPage: Int?
@@ -810,6 +852,11 @@ struct ReaderTextView: UIViewRepresentable {
 
         func reportPage(in view: UITextView) {
             guard view.bounds.width > 0, view.bounds.height > 0 else { return }
+            if abs(view.bounds.height - lastBuildHeight) > 0.5, buildHeightRetries < 3 {
+                buildHeightRetries += 1
+                lastBuildHeight = view.bounds.height
+                DispatchQueue.main.async { [weak self] in self?.parent.onDeferredRender() }
+            }
             updatePageMask(in: view)
             let metrics = pageMetrics(for: view)
             #if DEBUG
@@ -868,6 +915,10 @@ struct ReaderTextView: UIViewRepresentable {
 
         func resetPageRangeRetry() {
             pageRangeRetryCount = 0
+        }
+
+        func resetBuildHeightRetries() {
+            buildHeightRetries = 0
         }
 
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {

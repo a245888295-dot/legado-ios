@@ -459,9 +459,10 @@ final class ReaderScrollChapterLayout {
     let chapter: ReaderScrollChapter
     let storage: NSTextStorage
     let manager = NSLayoutManager()
-    let container: NSTextContainer
+    let container: ReaderTextContainer
     let bodyStart: Int
     let left: CGFloat
+    private let metrics = ReaderLineMetrics()
     private var fragments: [(range: NSRange, top: CGFloat, height: CGFloat)] = []
     var blocks: [ReaderScrollBlock] {
         fragments.map { .init(chapter: self, glyphRange: $0.range, top: $0.top, height: $0.height) }
@@ -472,8 +473,10 @@ final class ReaderScrollChapterLayout {
         let typography = ReaderTypography(configuration: configuration)
         left = CGFloat(configuration.paddingLeft) + 4
         let textWidth = max(width - left - CGFloat(configuration.paddingRight) - 4, 1)
-        container = NSTextContainer(size: CGSize(width: textWidth, height: .greatestFiniteMagnitude))
+        container = ReaderTextContainer(size: CGSize(width: textWidth, height: .greatestFiniteMagnitude))
         container.lineFragmentPadding = 0
+        container.metrics = metrics
+        metrics.indentWidth = typography.indentWidth
         let attributed = NSMutableAttributedString(string: "")
         if configuration.titleMode != 2, !chapter.title.isEmpty {
             attributed.append(NSAttributedString(string: chapter.title + "\n", attributes: typography.headingAttributes))
@@ -482,6 +485,7 @@ final class ReaderScrollChapterLayout {
         let body = chapter.error.map { "本章加载失败\n\n\($0)\n\n轻点打开阅读菜单。\n" } ?? (chapter.content.isEmpty ? "本章暂无正文\n" : chapter.content)
         attributed.append(NSAttributedString(string: body, attributes: typography.bodyAttributes))
         storage = NSTextStorage(attributedString: attributed)
+        metrics.storage = storage
         storage.addLayoutManager(manager)
         manager.addTextContainer(container)
         manager.ensureLayout(for: container)
@@ -593,43 +597,8 @@ private final class ReaderScrollCanvas: UIView {
     }
 }
 
-@MainActor
-struct ReaderTypography {
-    let bodyAttributes: [NSAttributedString.Key: Any]
-    let headingAttributes: [NSAttributedString.Key: Any]
-
-    init(configuration c: ReaderTextView) {
-        let weight: UIFont.Weight = switch c.fontWeight { case 1: .bold; case 2: .light; default: .regular }
-        let font = ReaderFontStore.font(at: c.fontPath, size: CGFloat(c.fontSize), weight: c.fontWeight)
-            ?? (c.fontWeight == 0 ? (UIFont(name: "STSongti-SC-Regular", size: CGFloat(c.fontSize))
-                ?? UIFont.systemFont(ofSize: CGFloat(c.fontSize))) : UIFont.systemFont(ofSize: CGFloat(c.fontSize), weight: weight))
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = CGFloat(c.lineSpacing)
-        paragraph.paragraphSpacing = CGFloat(c.paragraphSpacing)
-        paragraph.firstLineHeadIndent = (c.paragraphIndent as NSString).size(withAttributes: [
-            .font: font, .kern: CGFloat(c.letterSpacing * c.fontSize)
-        ]).width
-        paragraph.alignment = c.fullJustify ? .justified : .natural
-        var body: [NSAttributedString.Key: Any] = [
-            .font: font, .kern: CGFloat(c.letterSpacing * c.fontSize),
-            .foregroundColor: c.foregroundColor, .paragraphStyle: paragraph
-        ]
-        if c.underlineMode != 0 {
-            body[.readerUnderline] = c.underlineMode
-        }
-        bodyAttributes = body
-        let headingFont = ReaderFontStore.font(at: c.fontPath, size: CGFloat(max(5, c.fontSize + c.titleSize)), weight: c.fontWeight)
-            ?? UIFont.systemFont(ofSize: CGFloat(max(5, c.fontSize + c.titleSize)), weight: weight)
-        let heading = NSMutableParagraphStyle()
-        heading.alignment = c.titleMode == 1 ? .center : .left
-        heading.paragraphSpacingBefore = CGFloat(c.titleTopSpacing)
-        heading.paragraphSpacing = CGFloat(c.titleBottomSpacing)
-        headingAttributes = [.font: headingFont, .foregroundColor: c.foregroundColor, .paragraphStyle: heading]
-    }
-}
-
 extension ReaderTextView {
     var scrollTypographyKey: String {
-        "\(fontSize)|\(fontPath)|\(letterSpacing)|\(lineSpacing)|\(paragraphSpacing)|\(paragraphIndent)|\(paddingLeft)|\(paddingRight)|\(paddingTop)|\(paddingBottom)|\(fontWeight)|\(titleMode)|\(titleSize)|\(titleTopSpacing)|\(titleBottomSpacing)|\(underlineMode)|\(fullJustify)|\(foregroundColor.hash)"
+        "\(fontSize)|\(fontPath)|\(letterSpacing)|\(lineHeightMultiple)|\(paraSpacingMultiple)|\(paragraphIndent)|\(paddingLeft)|\(paddingRight)|\(paddingTop)|\(paddingBottom)|\(fontWeight)|\(titleMode)|\(titleSize)|\(titleTopSpacing)|\(titleBottomSpacing)|\(underlineMode)|\(fullJustify)|\(foregroundColor.hash)"
     }
 }

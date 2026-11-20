@@ -1,3 +1,4 @@
+import CoreText
 import SwiftUI
 import UIKit
 
@@ -91,6 +92,8 @@ extension NSAttributedString.Key {
     /// 标记这一段正文需要自绘下划线。值存 underlineMode（1 实线 / 2 点线）。
     /// 不交给 TextKit 画：它紧贴字底、颜色跟正文一样、行末还会提前截断。
     static let readerUnderline = NSAttributedString.Key("LegadoReaderUnderline")
+    /// 标记章节标题。分页时用它避免「标题落在页脚、正文翻到下一页」。
+    static let readerHeading = NSAttributedString.Key("LegadoReaderHeading")
 }
 
 enum ReaderUnderlinePainter {
@@ -116,5 +119,275 @@ enum ReaderUnderlinePainter {
     /// 比正文浅一档；正文纯黑时约 38% 不透明度。
     static func strokeColor(_ foreground: UIColor) -> UIColor {
         foreground.withAlphaComponent(0.38)
+    }
+}
+
+// MARK: - 排版模型
+//
+// 这一层是排版的唯一真源。所有间距都由「基准字号 × 倍数」算出来，
+// 不再存任何一个绝对 pt —— 以前字号一放大，行距/段距/边距全被稀释，
+// 用户看到的就是「28 号字满屏留白」。
+
+@MainActor
+struct ReaderTypography {
+    let fontSize: CGFloat
+    let lineHeightMultiple: CGFloat
+    let paraSpacingMultiple: CGFloat
+    let indentString: String
+    let letterSpacing: CGFloat
+    let justified: Bool
+    let fontWeight: Int
+    let fontPath: String
+    let titleMode: Int
+    let titleSize: CGFloat
+    let titleTopSpacing: CGFloat
+    let titleBottomSpacing: CGFloat
+    let underlineMode: Int
+    let availableHeight: CGFloat
+
+    /// 实际行高（pt）。已经按页面高度对齐成整数行。
+    let lineHeight: CGFloat
+    /// 首行缩进宽度（pt）。
+    let indentWidth: CGFloat
+
+    let bodyAttributes: [NSAttributedString.Key: Any]
+    let headingAttributes: [NSAttributedString.Key: Any]
+
+    /// 大字自动收紧行距：22 号及以下不动，往上每大一号收 3.3%，最低 0.72 倍。
+    /// 这是真排版规则（大字视觉重量足，同样的比例会显得散），不是补丁。
+    static func tighteningScale(for fontSize: CGFloat) -> CGFloat {
+        fontSize > 22 ? max(0.72, 1.0 - 0.033 * (fontSize - 22)) : 1.0
+    }
+
+    /// 理想行高 = 字号 × 档位 × 收紧系数。
+    static func idealLineHeight(fontSize: CGFloat, multiple: CGFloat) -> CGFloat {
+        fontSize * min(2.6, max(1.22, multiple * tighteningScale(for: fontSize)))
+    }
+
+    init(configuration c: ReaderTextView, availableHeight: CGFloat = 0) {
+        let size = CGFloat(max(5, c.fontSize))
+        fontSize = size
+        lineHeightMultiple = CGFloat(c.lineHeightMultiple)
+        paraSpacingMultiple = CGFloat(c.paraSpacingMultiple)
+        indentString = c.paragraphIndent
+        letterSpacing = CGFloat(c.letterSpacing) * size
+        justified = c.fullJustify
+        fontWeight = c.fontWeight
+        fontPath = c.fontPath
+        titleMode = c.titleMode
+        titleSize = CGFloat(c.titleSize)
+        titleTopSpacing = CGFloat(c.titleTopSpacing)
+        titleBottomSpacing = CGFloat(c.titleBottomSpacing)
+        underlineMode = c.underlineMode
+        self.availableHeight = availableHeight
+
+        let weight: UIFont.Weight = switch c.fontWeight {
+        case 1: .bold
+        case 2: .light
+        default: .regular
+        }
+        let resolved = ReaderFontStore.font(at: c.fontPath, size: size, weight: c.fontWeight)
+            ?? (c.fontWeight == 0
+                ? (UIFont(name: "STSongti-SC-Regular", size: size) ?? UIFont.systemFont(ofSize: size))
+                : UIFont.systemFont(ofSize: size, weight: weight))
+
+        // 行高对齐：把理想行高微调成「页面高度 ÷ 整数行」。
+        // 这样一页正好装下 n 行，页脚不会剩下半行高的空白 —— 之前的底部留白主要来自这里。
+        let ideal = Self.idealLineHeight(fontSize: size, multiple: CGFloat(c.lineHeightMultiple))
+        var height = ideal
+        if availableHeight > ideal * 2.5 {
+            let lines = max(1, floor(availableHeight / ideal))
+            let snapped = availableHeight / lines
+            if snapped <= ideal * 1.08 { height = snapped }
+        }
+        lineHeight = height
+
+        let indent = c.paragraphIndent.isEmpty
+            ? 0
+            : (c.paragraphIndent as NSString).size(withAttributes: [
+                .font: resolved, .kern: letterSpacing
+            ]).width
+        indentWidth = indent
+
+        let paragraph = NSMutableParagraphStyle()
+        // 固定行高：minimum 和 maximum 都设成同一个值，行与行之间的间隔才是精确倍数。
+        // 之前用 lineSpacing（额外间距）叠加系统行高，系统行高本身随字体浮动，
+        // 结果就是「看着调了但每次不一样」。
+        paragraph.minimumLineHeight = height
+        paragraph.maximumLineHeight = height
+        paragraph.lineSpacing = 0
+        paragraph.paragraphSpacing = max(0, size * CGFloat(c.paraSpacingMultiple))
+        paragraph.firstLineHeadIndent = indent
+        paragraph.alignment = c.fullJustify ? .justified : .natural
+        paragraph.lineBreakStrategy = .pushOut
+        paragraph.hyphenationFactor = 0
+
+        var body: [NSAttributedString.Key: Any] = [
+            .font: resolved,
+            .kern: letterSpacing,
+            .foregroundColor: c.foregroundColor,
+            .paragraphStyle: paragraph
+        ]
+        if c.underlineMode != 0 {
+            body[.readerUnderline] = c.underlineMode
+        }
+        bodyAttributes = body
+
+        let headingSize = CGFloat(max(5, size + CGFloat(c.titleSize)))
+        let headingFont = ReaderFontStore.font(at: c.fontPath, size: headingSize, weight: c.fontWeight)
+            ?? UIFont.systemFont(ofSize: headingSize, weight: weight)
+        let headingParagraph = NSMutableParagraphStyle()
+        headingParagraph.minimumLineHeight = max(height, headingSize * 1.25)
+        headingParagraph.maximumLineHeight = headingParagraph.minimumLineHeight
+        headingParagraph.alignment = c.titleMode == 1 ? .center : .left
+        headingParagraph.paragraphSpacingBefore = CGFloat(c.titleTopSpacing)
+        headingParagraph.paragraphSpacing = CGFloat(c.titleBottomSpacing)
+        headingParagraph.lineBreakStrategy = .pushOut
+        headingAttributes = [
+            .font: headingFont,
+            .foregroundColor: c.foregroundColor,
+            .paragraphStyle: headingParagraph,
+            .readerHeading: true
+        ]
+    }
+}
+
+// MARK: - 中文断行禁则
+
+/// 中文排版的避头尾规则。纯字符判断，和具体小说、具体字号都无关，
+/// 所以换任何一本书行为完全一致 —— 这就是「通用性」的落点。
+enum ReaderLineBreaker {
+    /// 不能出现在一行开头的字符（会跟着上一行走）。
+    private static let noLineStart: Set<unichar> = {
+        var set = Set<unichar>()
+        let text = "，。、；：？！）〕〉》」』】｝〗〙〛”’…—～·%,.;:?!)]}"
+        for scalar in text.unicodeScalars where scalar.value <= 0xFFFF {
+            set.insert(unichar(scalar.value))
+        }
+        return set
+    }()
+
+    /// 不能出现在一行结尾的字符（会跟着下一行走）。
+    private static let noLineEnd: Set<unichar> = {
+        var set = Set<unichar>()
+        let text = "（〔〈《「『【｛〖〘〚“‘([{"
+        for scalar in text.unicodeScalars where scalar.value <= 0xFFFF {
+            set.insert(unichar(scalar.value))
+        }
+        return set
+    }()
+
+    /// 把断点往前挪，直到不违反禁则。`breakIndex` 是「下一行从哪个字符开始」。
+    /// 最多回退 3 个字，避免极端文本（比如整段都是省略号）把一行挤没。
+    static func adjust(breakIndex: Int, in text: NSString, lowerBound: Int) -> Int {
+        var index = breakIndex
+        var steps = 0
+        while steps < 3 {
+            guard index > lowerBound, index < text.length else { break }
+            let head = text.character(at: index)
+            let tail = text.character(at: index - 1)
+            if noLineStart.contains(head) || noLineEnd.contains(tail) {
+                index -= 1
+                steps += 1
+            } else {
+                break
+            }
+        }
+        return index
+    }
+}
+
+// MARK: - 断行测量
+
+/// 给 NSTextContainer 用的测量器：算出「这一行该在哪里断」。
+/// 只做测量，不碰绘制，所以可以在 TextKit 询问时同步调用。
+final class ReaderLineMetrics {
+    weak var storage: NSTextStorage?
+    var indentWidth: CGFloat = 0
+    var enabled = true
+
+    private var cache: [Int: CGFloat] = [:]
+
+    func invalidate() { cache.removeAll(keepingCapacity: true) }
+
+    /// 只保留字体和字距，去掉段落样式。
+    /// 中途截出来的一段如果还带着 firstLineHeadIndent/alignment，CoreText 会二次计算缩进，
+    /// 量出来的宽度就偏大，收缩也就不生效了。
+    private static func measuringSlice(
+        _ storage: NSTextStorage, location: Int, length: Int
+    ) -> NSAttributedString {
+        guard length > 0 else { return NSAttributedString(string: "") }
+        let slice = NSMutableAttributedString(
+            attributedString: storage.attributedSubstring(from: NSRange(location: location, length: length))
+        )
+        let full = NSRange(location: 0, length: slice.length)
+        slice.removeAttribute(.paragraphStyle, range: full)
+        slice.removeAttribute(.readerUnderline, range: full)
+        slice.removeAttribute(.readerHeading, range: full)
+        return slice
+    }
+
+    /// 返回需要收缩到的行宽；nil 表示不用改，按原宽度断行。
+    func narrowedWidth(lineStart: Int, available: CGFloat) -> CGFloat? {
+        guard enabled, let storage, storage.length > 0,
+              available > 16, lineStart >= 0, lineStart < storage.length else { return nil }
+        let key = lineStart &* 100_003 &+ Int(available)
+        if let cached = cache[key] { return cached > 0 ? cached : nil }
+
+        let text = storage.string as NSString
+        let isFirstLine = lineStart == 0 || text.character(at: lineStart - 1) == 10
+        let indent = isFirstLine ? indentWidth : 0
+        let measureWidth = available - indent
+        guard measureWidth > 16 else { return nil }
+
+        let limit = min(storage.length, lineStart + 480)
+        let slice = Self.measuringSlice(storage, location: lineStart, length: limit - lineStart)
+        guard slice.length > 0 else { return nil }
+        let typesetter = CTTypesetterCreateWithAttributedString(slice as CFAttributedString)
+        var count = CTTypesetterSuggestLineBreak(typesetter, 0, Double(measureWidth))
+        if count <= 0 { count = 1 }
+
+        let fixed = ReaderLineBreaker.adjust(
+            breakIndex: lineStart + count,
+            in: text,
+            lowerBound: lineStart
+        )
+        guard fixed != lineStart + count else {
+            cache[key] = 0
+            return nil
+        }
+
+        let sub = Self.measuringSlice(storage, location: lineStart, length: fixed - lineStart)
+        let line = CTLineCreateWithAttributedString(sub as CFAttributedString)
+        var width = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)) + indent
+        // 减 0.5 让系统一定在目标字符之前断，宁可少一个字也不能把标点顶到行首。
+        width = max(width - 0.5, available * 0.25)
+        let result = min(width, available)
+        cache[key] = result
+        return result
+    }
+}
+
+/// 接管断行权的容器。系统仍然负责字形排布和光标，但「这一行到哪儿为止」由我们说了算。
+final class ReaderTextContainer: NSTextContainer {
+    var metrics: ReaderLineMetrics?
+
+    override func lineFragmentRect(
+        forProposedRect proposedRect: CGRect,
+        at characterIndex: Int,
+        writingDirection baseWritingDirection: NSWritingDirection,
+        remainingRect: UnsafeMutablePointer<CGRect>?
+    ) -> CGRect {
+        let base = super.lineFragmentRect(
+            forProposedRect: proposedRect,
+            at: characterIndex,
+            writingDirection: baseWritingDirection,
+            remainingRect: remainingRect
+        )
+        guard let metrics, base.width > 16 else { return base }
+        guard let width = metrics.narrowedWidth(lineStart: characterIndex, available: base.width) else {
+            return base
+        }
+        return CGRect(x: base.minX, y: base.minY, width: width, height: base.height)
     }
 }

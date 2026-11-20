@@ -2124,8 +2124,8 @@ private struct SearchScopeSheet: View {
 private struct ReadingPreferencesView: View {
     @AppStorage("textSize") private var fontSize = 20.0
     @AppStorage("letterSpacing") private var letterSpacing = 0.1
-    @AppStorage("lineSpacingExtra") private var lineSpacing = 12.0
-    @AppStorage("paragraphSpacing") private var paragraphSpacing = 2.0
+    @AppStorage("lineHeightMultiple") private var lineHeightMultiple = 1.8
+    @AppStorage("paraSpacingMultipleV2") private var paraSpacingMultiple = 0.0
     @AppStorage("paragraphIndent") private var paragraphIndent = "　　"
     @AppStorage("paddingLeft") private var paddingLeft = 16.0
     @AppStorage("paddingRight") private var paddingRight = 16.0
@@ -2149,10 +2149,10 @@ private struct ReadingPreferencesView: View {
                 Slider(value: $fontSize, in: 5...50, step: 1)
                 ReadingLabeledContent("字间距", value: String(format: "%.2f", letterSpacing))
                 Slider(value: $letterSpacing, in: -0.5...0.5, step: 0.01)
-                ReadingLabeledContent("行间距", value: String(format: "%.0f", lineSpacing))
-                Slider(value: $lineSpacing, in: 0...50, step: 1)
-                ReadingLabeledContent("段距", value: String(format: "%.1f", paragraphSpacing))
-                Slider(value: $paragraphSpacing, in: 0...50, step: 1)
+                ReadingLabeledContent("行距", value: String(format: "%.2f 倍", lineHeightMultiple))
+                Slider(value: $lineHeightMultiple, in: 1.2...2.6, step: 0.05)
+                ReadingLabeledContent("段距", value: String(format: "%.2f 字", paraSpacingMultiple))
+                Slider(value: $paraSpacingMultiple, in: 0...1.5, step: 0.05)
                 Picker("字重", selection: $fontWeight) {
                     Text("正常").tag(0)
                     Text("粗体").tag(1)
@@ -2222,7 +2222,7 @@ private struct ReadingPreferencesView: View {
                 Text("雨落在旧城的瓦檐上，故事从一束灯光开始。")
                     .tracking(letterSpacing * fontSize)
                     .font(.system(size: fontSize, design: .serif))
-                    .lineSpacing(lineSpacing)
+                    .lineSpacing(max(0, (lineHeightMultiple - 1.0) * fontSize * 0.55))
                     .foregroundStyle(Color(uiColor: ReaderStylePreset.resolve(theme).foreground))
                     .padding(.vertical, 12)
                     .listRowBackground(Color(uiColor: ReaderStylePreset.resolve(theme).background))

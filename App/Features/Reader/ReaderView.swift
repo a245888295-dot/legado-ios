@@ -68,7 +68,7 @@ struct ReaderView: View {
     @AppStorage("lineHeightMultiple") private var lineHeightMultiple = 1.8
     /// 段距倍数（相对字号）。中文靠首行缩进分段，段距本来就该很小；0.6 字是西文习惯，
     /// 叠加在 2 字缩进上会变成"双倍分段信号 + 一大块空白"，所以默认收到 0.18 字。
-    @AppStorage("paraSpacingMultipleV2") private var paraSpacingMultiple = 0.18
+    @AppStorage("paraSpacingMultipleV2") private var paraSpacingMultiple = 0.0
     @AppStorage("paragraphSpacing") private var paragraphSpacing = 2.0
     @AppStorage("paragraphIndent") private var paragraphIndent = "　　"
     @AppStorage("paddingLeft") private var paddingLeft = 16.0
@@ -83,6 +83,8 @@ struct ReaderView: View {
     @AppStorage("titleBottomSpacing") private var titleBottomSpacing = 0.0
     @AppStorage("underlineMode") private var underlineMode = 0
     @State private var showsResetTypographyAlert = false
+    /// 排版模型迁移标记：从「绝对 pt」换成「字号倍数」只做一次。
+    @AppStorage("typographyModelV3") private var typographyModelMigrated = false
     @AppStorage("headerPaddingBottom") private var headerPaddingBottom = 0.0
     @AppStorage("headerPaddingLeft") private var headerPaddingLeft = 16.0
     @AppStorage("headerPaddingRight") private var headerPaddingRight = 16.0
@@ -241,6 +243,7 @@ struct ReaderView: View {
             Button("好", role: .cancel) { readerSettingSaveError = nil }
         } message: { Text(readerSettingSaveError ?? "") }
         .onAppear {
+            migrateTypographyOnce()
             activity.beginReading(book)
             speech.onNextChapter = { moveSpeechToChapter(direction: 1) }
             speech.onPreviousChapter = { moveSpeechToChapter(direction: -1) }
@@ -618,8 +621,8 @@ struct ReaderView: View {
             fontSize: fontSize,
             fontPath: fontPath,
             letterSpacing: letterSpacing,
-            lineSpacing: effectiveLineSpacing,
-            paragraphSpacing: effectiveParagraphSpacing,
+            lineHeightMultiple: effectiveLineHeightMultiple,
+            paraSpacingMultiple: paraSpacingMultiple,
             paragraphIndent: paragraphIndent,
             paddingLeft: paddingLeft,
             paddingRight: paddingRight,
@@ -1201,11 +1204,6 @@ struct ReaderView: View {
         min(2.6, max(1.22, lineHeightMultiple * lineHeightScale))
     }
 
-    /// 行距倍数 → 行间额外间距（pt）。系统字体行高约 1.19 em，超出部分才是额外间距。
-    private var effectiveLineSpacing: Double {
-        max(0, (effectiveLineHeightMultiple - 1.19) * fontSize)
-    }
-
     /// 段距倍数 → 段间距（pt），跟着字号缩放。
     private var effectiveParagraphSpacing: Double {
         max(0, paraSpacingMultiple * fontSize)
@@ -1246,15 +1244,24 @@ struct ReaderView: View {
                         Text("行距")
                             .font(.subheadline)
                         Spacer(minLength: 8)
-                        readerChoiceChip("紧凑", selected: lineHeightMultiple < 1.7) { lineHeightMultiple = 1.55 }
-                        readerChoiceChip("标准", selected: lineHeightMultiple >= 1.7 && lineHeightMultiple < 1.95) { lineHeightMultiple = 1.8 }
-                        readerChoiceChip("宽松", selected: lineHeightMultiple >= 1.95) { lineHeightMultiple = 2.05 }
+                        readerChoiceChip("紧凑", selected: lineHeightMultiple < 1.7) {
+                            lineHeightMultiple = 1.55
+                            paraSpacingMultiple = 0
+                        }
+                        readerChoiceChip("标准", selected: lineHeightMultiple >= 1.7 && lineHeightMultiple < 1.95) {
+                            lineHeightMultiple = 1.8
+                            paraSpacingMultiple = 0
+                        }
+                        readerChoiceChip("宽松", selected: lineHeightMultiple >= 1.95) {
+                            lineHeightMultiple = 2.05
+                            paraSpacingMultiple = 0.15
+                        }
                     }
                     Toggle("两端对齐", isOn: $fullJustify)
                 } header: {
                     Text("排版")
                 } footer: {
-                    Text("行距按字号等比缩放，字号超过 22 后自动收紧；段距已按中文小说的习惯收到很小，靠首行缩进分段就够。其余参数一般不用动。")
+                    Text("所有间距都按字号的比例算，改字号整篇等比跟随，不会越调越空。行距超过 22 号会自动收紧一点（大字不需要那么多空隙）。中文靠首行缩进分段，段距默认 0。")
                 }
 
                 Section("阅读背景") {
@@ -1421,11 +1428,21 @@ struct ReaderView: View {
         }
     }
 
+    /// 一次性迁移到比例排版模型。
+    /// 段距从 0.18 字收到 0：中文靠首行缩进分段，段距归零之后每一页才能正好排满整行，
+    /// 页脚不会剩下半行高的空白 —— 这是「底部留白」的最后一环。
+    private func migrateTypographyOnce() {
+        guard !typographyModelMigrated else { return }
+        typographyModelMigrated = true
+        if abs(paraSpacingMultiple - 0.18) < 0.001 { paraSpacingMultiple = 0 }
+        if lineHeightMultiple < 1.18 { lineHeightMultiple = 1.8 }
+    }
+
     private func resetTypographyToDefaults() {
         fontSize = 19
         letterSpacing = 0
         lineHeightMultiple = 1.8
-        paraSpacingMultiple = 0.18
+        paraSpacingMultiple = 0
         paragraphIndent = "　　"
         paddingLeft = 18
         paddingRight = 18
@@ -1452,7 +1469,7 @@ struct ReaderView: View {
                             .foregroundStyle(.secondary)
                     }
                     valueSlider("段距", value: $paraSpacingMultiple, range: 0...2, step: 0.05, format: { String(format: "%.2f 字", $0) })
-                    Text("中文靠首行缩进分段，段距一般 0.1–0.3 字就够；调到 0.5 以上会出现大片空白。")
+                    Text("中文靠首行缩进分段，段距保持 0 最干净，也是整页排满、页脚不留空的前提。调到 0.5 以上会出现大片空白。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Picker("字重", selection: $fontWeight) {
