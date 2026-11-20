@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct DiagnosticLogView: View {
@@ -9,6 +10,7 @@ struct DiagnosticLogView: View {
     @State private var exportsLog = false
     @State private var exportText = ""
     @State private var errorMessage: String?
+    @State private var volumeKeyLog = ""
 
     private var filtered: [DiagnosticLogEntry] {
         entries.filter {
@@ -30,6 +32,22 @@ struct DiagnosticLogView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             } footer: {
                 Text("在“其他设置”开启记录后，会保存网络请求、JS 输出和运行错误。崩溃诊断由 iOS 延迟提供，可搜索“系统诊断”查看。")
+            }
+            Section {
+                if volumeKeyLog.isEmpty {
+                    Text("还没有音量键记录").font(.footnote).foregroundStyle(.secondary)
+                } else {
+                    Text(volumeKeyLog)
+                        .font(.system(.caption2, design: .monospaced))
+                        .textSelection(.enabled)
+                    Button("复制音量键日志", systemImage: "doc.on.doc") {
+                        UIPasteboard.general.string = volumeKeyLog
+                    }
+                }
+            } header: {
+                Text("音量键")
+            } footer: {
+                Text("这部分不论“记录运行日志”开没开都会写。按键没反应时看它：出现“按键”一行说明系统把按键事件给了 App，问题在翻页；一行都没有说明事件根本没到 App。")
             }
             if filtered.isEmpty {
                 ReadingUnavailableView(query.isEmpty ? "暂无日志" : "没有匹配的日志", systemImage: "doc.text.magnifyingglass")
@@ -81,7 +99,17 @@ struct DiagnosticLogView: View {
         } message: { Text(errorMessage ?? "") }
     }
 
-    private func reload() { entries = DiagnosticLog.shared.snapshot() }
+    private func reload() {
+        entries = DiagnosticLog.shared.snapshot()
+        volumeKeyLog = Self.readVolumeKeyLog()
+    }
+
+    private static func readVolumeKeyLog() -> String {
+        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Legado/Logs/volume-key.log")
+        guard let data = try? Data(contentsOf: url), !data.isEmpty else { return "" }
+        return String(decoding: data.suffix(4000), as: UTF8.self)
+    }
     private func levelTitle(_ level: DiagnosticLogEntry.Level) -> String {
         switch level { case .info: "信息"; case .warning: "警告"; case .error: "错误" }
     }
