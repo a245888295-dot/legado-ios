@@ -432,7 +432,11 @@ struct ReaderView: View {
 
     private var readerCanvas: some View {
         ZStack {
+            // 标签栏收走之后，系统还会把 Home Indicator 的 34pt 安全区留给正文，
+            // 于是最后一行下面总挂着一条空隙。没有页脚时把这块也让给正文，
+            // 行距本身会把手势条的空隙衬出来，文字不会被压住。
             readerContent
+                .ignoresSafeArea(edges: footerVisible ? Edge.Set() : Edge.Set.bottom)
             readerMenuDismissOverlay
         }
         .background {
@@ -856,8 +860,14 @@ struct ReaderView: View {
 
 
     private var readerTopChrome: some View {
+        // 书签、更多放左边，返回放最右边：右手持机时拇指更容易够到退出。
         HStack(spacing: 4) {
-            readerChromeIconButton("chevron.backward", label: "返回") { dismiss() }
+            readerChromeIconButton(bookmarkSaved ? "bookmark.fill" : "bookmark", label: "书签") {
+                addBookmark()
+            }
+            .accessibilityValue(bookmarkSaved ? "已添加" : "添加当前位置")
+            .disabled(isSavingBookmark)
+            readerMoreMenu
             VStack(alignment: .leading, spacing: 3) {
                 Text(book.name)
                     .font(.subheadline.weight(.medium))
@@ -874,12 +884,7 @@ struct ReaderView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .combine)
-            readerChromeIconButton(bookmarkSaved ? "bookmark.fill" : "bookmark", label: "书签") {
-                addBookmark()
-            }
-            .accessibilityValue(bookmarkSaved ? "已添加" : "添加当前位置")
-            .disabled(isSavingBookmark)
-            readerMoreMenu
+            readerChromeIconButton("chevron.backward", label: "返回") { dismiss() }
         }
         .foregroundStyle(readerChromeTint)
         .padding(.horizontal, 8)
