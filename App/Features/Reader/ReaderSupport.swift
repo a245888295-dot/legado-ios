@@ -231,16 +231,25 @@ struct ReaderTypography {
         indentWidth = indent
 
         let paragraph = NSMutableParagraphStyle()
-        // 固定行高：minimum 和 maximum 都设成同一个值，行与行之间的间隔才是精确倍数。
-        // 之前用 lineSpacing（额外间距）叠加系统行高，系统行高本身随字体浮动，
-        // 结果就是「看着调了但每次不一样」。
-        paragraph.minimumLineHeight = height
-        paragraph.maximumLineHeight = height
-        paragraph.lineSpacing = 0
+        // 只用 lineSpacing 加间距，不用 minimumLineHeight/maximumLineHeight。
+        //
+        // 这是这一版最重要的一处回退：固定行高（把 minimum 和 maximum 设成同一个值）
+        // 确实能让每页精确排满，但它是在跟 NSLayoutManager 的行片段计算较劲 ——
+        // 一旦某行的高度算不拢，系统内部断言直接把进程带走，表现就是打开 TXT 闪退。
+        //
+        // 系统行高对同一字体字号是常数（font.lineHeight），所以「目标行高 - 字体行高」
+        // 得到额外间距，行高依然是精确值，整页对齐的效果一点没丢，但没有越权改系统行为。
+        paragraph.lineSpacing = max(0, height - resolved.lineHeight)
         paragraph.paragraphSpacing = max(0, size * CGFloat(c.paraSpacingMultiple))
         paragraph.firstLineHeadIndent = indent
         paragraph.alignment = c.fullJustify ? .justified : .natural
-        paragraph.lineBreakStrategy = .pushOut
+        // pushOut 让行首标点被推回上一行，代价是允许行宽溢出容器。
+        // iOS 15 的 TextKit 1 对中文标点覆盖不全，溢出后 usedRect 会超出
+        // 行片段宽度，直接触发 NSLayoutManager 的断言 —— 中文小说里几乎每段都有标点，
+        // 所以这条最容易被踩响。熔断时一并关掉。
+        if !ReaderEngineSwitch.isDisabled {
+            paragraph.lineBreakStrategy = .pushOut
+        }
         paragraph.hyphenationFactor = 0
 
         var body: [NSAttributedString.Key: Any] = [
@@ -258,12 +267,14 @@ struct ReaderTypography {
         let headingFont = ReaderFontStore.font(at: c.fontPath, size: headingSize, weight: c.fontWeight)
             ?? UIFont.systemFont(ofSize: headingSize, weight: weight)
         let headingParagraph = NSMutableParagraphStyle()
-        headingParagraph.minimumLineHeight = max(height, headingSize * 1.25)
-        headingParagraph.maximumLineHeight = headingParagraph.minimumLineHeight
+        let headingHeight = max(height, headingSize * 1.25)
+        headingParagraph.lineSpacing = max(0, headingHeight - headingFont.lineHeight)
         headingParagraph.alignment = c.titleMode == 1 ? .center : .left
         headingParagraph.paragraphSpacingBefore = CGFloat(c.titleTopSpacing)
         headingParagraph.paragraphSpacing = CGFloat(c.titleBottomSpacing)
-        headingParagraph.lineBreakStrategy = .pushOut
+        if !ReaderEngineSwitch.isDisabled {
+            headingParagraph.lineBreakStrategy = .pushOut
+        }
         headingAttributes = [
             .font: headingFont,
             .foregroundColor: c.foregroundColor,

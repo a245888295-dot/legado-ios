@@ -118,7 +118,8 @@ private final class ReaderLayoutTextView: UITextView {
             if probe.isEmpty { probe = storage.attributes(at: 0, effectiveRange: nil) }
         }
         let mark = (probe[.readerUnderline] as? Int) ?? 0
-        let spacing = (probe[.paragraphStyle] as? NSParagraphStyle)?.minimumLineHeight ?? 0
+        let style = probe[.paragraphStyle] as? NSParagraphStyle
+        let spacing = (style?.lineSpacing ?? 0) + (style?.minimumLineHeight ?? 0)
         let kern = (probe[.kern] as? NSNumber)?.doubleValue ?? 0
         let colorKey = (probe[.foregroundColor] as? UIColor)?.hashValue ?? 0
         let key = storage.string.hashValue
