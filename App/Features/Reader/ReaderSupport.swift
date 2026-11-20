@@ -178,7 +178,7 @@ final class VolumeKeyPager: NSObject, @unchecked Sendable {
         installVolumeView()
 
         lastVolume = session.outputVolume
-        note("启动 会话活跃=\(session.isActive) 当前音量=\(lastVolume)")
+        note("启动 当前音量=\(lastVolume) 输出通路=\(session.currentRoute.outputs.first?.portType.rawValue ?? "-")")
 
         for name in Self.notificationNames {
             NotificationCenter.default.addObserver(
@@ -275,8 +275,16 @@ final class VolumeKeyPager: NSObject, @unchecked Sendable {
 
     /// `MPVolumeView` 里的 UISlider 就是系统音量控制器。
     /// 这个视图必须挂在窗口上才有作用，所以放在屏幕外、不可交互、几乎透明。
-    private func installVolumeView() {
-        guard volumeView == nil, let window = Self.keyWindow() else { return }
+    private func installVolumeView(retry: Int = 0) {
+        guard volumeView == nil else { return }
+        guard let window = Self.keyWindow() else {
+            // makeUIView 阶段窗口可能还没挂上，稍后再试几次。
+            guard retry < 5 else { note("MPVolumeView 挂载失败：找不到窗口"); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                self?.installVolumeView(retry: retry + 1)
+            }
+            return
+        }
         let view = MPVolumeView(frame: CGRect(x: -300, y: -300, width: 120, height: 40))
         view.alpha = 0.01
         view.isUserInteractionEnabled = false
@@ -305,7 +313,7 @@ final class VolumeKeyPager: NSObject, @unchecked Sendable {
         for scene in scenes {
             if let key = scene.windows.first(where: { $0.isKeyWindow }) { return key }
         }
-        return scenes.flatMap(\.windows).first
+        return scenes.flatMap { $0.windows }.first
     }
 
     /// 备用通道：私有方法 `AVSystemController.setVolumeTo:forCategory:`。
