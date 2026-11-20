@@ -251,7 +251,7 @@ struct ReaderTextView: UIViewRepresentable {
         // Pagination uses NSLayoutManager. Start in TextKit 1 rather than
         // switching a TextKit 2 view after its content size has been computed.
         // 自定义容器接管断行权：中文标点不会被顶到行首。
-        let container = ReaderTextContainer(size: CGSize(width: 0, height: .greatestFiniteMagnitude))
+        let container = ReaderTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
         container.lineFragmentPadding = 4
         container.widthTracksTextView = true
         container.heightTracksTextView = false

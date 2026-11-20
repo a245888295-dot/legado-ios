@@ -376,13 +376,13 @@ final class ReaderTextContainer: NSTextContainer {
         forProposedRect proposedRect: CGRect,
         at characterIndex: Int,
         writingDirection baseWritingDirection: NSWritingDirection,
-        remainingRect: UnsafeMutablePointer<CGRect>?
+        remaining remainingRect: UnsafeMutablePointer<CGRect>?
     ) -> CGRect {
         let base = super.lineFragmentRect(
             forProposedRect: proposedRect,
             at: characterIndex,
             writingDirection: baseWritingDirection,
-            remainingRect: remainingRect
+            remaining: remainingRect
         )
         guard let metrics, base.width > 16 else { return base }
         guard let width = metrics.narrowedWidth(lineStart: characterIndex, available: base.width) else {
