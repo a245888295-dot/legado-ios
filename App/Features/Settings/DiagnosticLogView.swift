@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct DiagnosticLogView: View {
@@ -8,6 +9,7 @@ struct DiagnosticLogView: View {
     @State private var confirmsClear = false
     @State private var exportsLog = false
     @State private var exportText = ""
+    @State private var copiedHint = false
     @State private var errorMessage: String?
     @State private var crashText: String?
     @State private var metricKitText: String?
@@ -21,6 +23,23 @@ struct DiagnosticLogView: View {
 
     var body: some View {
         List {
+            Section {
+                Button {
+                    copyToPasteboard(fullReport)
+                } label: {
+                    Label(copiedHint ? "已复制到剪贴板" : "复制完整诊断报告", systemImage: copiedHint ? "checkmark.circle.fill" : "doc.on.doc")
+                }
+                Button {
+                    exportText = fullReport
+                    exportsLog = true
+                } label: {
+                    Label("存成文件", systemImage: "square.and.arrow.up")
+                }
+            } header: {
+                Text("诊断报告")
+            } footer: {
+                Text("一份文件装下版本号、崩溃记录和运行日志，直接发给开发者就能定位，不用截图。")
+            }
             if let crashText {
                 Section {
                     ScrollView {
@@ -30,6 +49,11 @@ struct DiagnosticLogView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .frame(maxHeight: 220)
+                    Button {
+                        copyToPasteboard(ReaderCrashReport.fullText ?? crashText)
+                    } label: {
+                        Label("复制", systemImage: "doc.on.doc")
+                    }
                     Button("清除崩溃记录", role: .destructive) {
                         ReaderCrashReport.clear()
                         self.crashText = nil
@@ -49,6 +73,11 @@ struct DiagnosticLogView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .frame(maxHeight: 260)
+                    Button {
+                        copyToPasteboard(metricKitText)
+                    } label: {
+                        Label("复制", systemImage: "doc.on.doc")
+                    }
                     Button("清除系统报告", role: .destructive) {
                         ReaderCrashReport.clearMetricKit()
                         self.metricKitText = nil
@@ -119,6 +148,36 @@ struct DiagnosticLogView: View {
         .alert("日志操作失败", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
             Button("好") { errorMessage = nil }
         } message: { Text(errorMessage ?? "") }
+    }
+
+    /// 版本号从 Info.plist 取，跟启动日志一致，方便确认装的是哪一版。
+    private var versionText: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        return "\(version) (\(build))"
+    }
+
+    private var fullReport: String {
+        var parts = ["# 小浣熊阅读诊断报告", "版本：\(versionText)",
+                     "设备：\(UIDevice.current.model) / iOS \(UIDevice.current.systemVersion)"]
+        if let crashText {
+            parts.append("\n== 未捕获异常 ==\n" + crashText)
+        }
+        if let metricKitText {
+            parts.append("\n== 系统崩溃报告（MetricKit 原始 JSON）==\n" + metricKitText)
+        }
+        let log = DiagnosticLog.shared.export()
+        parts.append("\n== 运行日志（\(entries.count) 条）==\n" + (log.isEmpty ? "（无）" : log))
+        return parts.joined(separator: "\n")
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        UIPasteboard.general.string = text
+        copiedHint = true
+        Task {
+            try? await Task.sleep(nanoseconds: 1_600_000_000)
+            copiedHint = false
+        }
     }
 
     private func reload() {

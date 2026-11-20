@@ -60,6 +60,24 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' dist/Payload/Legado.app/Info.plist || true
           /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' dist/Payload/Legado.app/Info.plist || true
 
+      - name: Collect symbols
+        if: success()
+        run: |
+          set -euo pipefail
+          APP=build/DeviceDerivedData/Build/Products/Release-iphoneos/Legado.app
+          # Release 会 strip 掉 .app 里的符号，但 dSYM 里的 DWARF 是完整的。
+          # 崩溃报告给的是「binaryUUID + 段内偏移」，有这张地址表就能反查出函数名。
+          DWARF="$APP.dSYM/Contents/Resources/DWARF/Legado"
+          {
+            echo "# binary uuid"
+            dwarfdump --uuid "$APP/Legado" || true
+            echo "# text segment vmaddr"
+            otool -l "$APP/Legado" | awk '/segname __TEXT/{f=1} f&&/vmaddr/{print; f=0}' || true
+            echo "# symbols"
+            nm -arch arm64 -n "$DWARF" 2>/dev/null | awk '$2 ~ /^[tT]$/ {print $1" "$3}' || true
+          } > dist/symbols.txt
+          wc -l dist/symbols.txt
+
       - name: Upload IPA
         if: success()
         uses: actions/upload-artifact@v4
@@ -67,6 +85,14 @@ jobs:
           name: legado-ios-ipa
           path: dist/*.ipa
           if-no-files-found: error
+
+      - name: Upload symbols
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: legado-symbols
+          path: dist/symbols.txt
+          if-no-files-found: warn
 
       - name: Upload build log
         if: failure()

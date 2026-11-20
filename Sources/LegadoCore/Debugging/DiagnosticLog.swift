@@ -32,7 +32,7 @@ public final class DiagnosticLog: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         entries.append(.init(id: UUID(), date: Date(), level: level,
-                             category: String(category.prefix(80)), message: Self.redact(String(message.prefix(2048)))))
+                             category: String(category.prefix(80)), message: Self.redact(String(message.prefix(8192)))))
         entries = Array(entries.suffix(maximumEntries))
         try? persist()
     }

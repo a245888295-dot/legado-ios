@@ -42,6 +42,14 @@ enum ReaderCrashReport {
     static func clearMetricKit() {
         try? FileManager.default.removeItem(at: metricKitURL)
     }
+
+    /// 两份记录拼在一起，给「复制」按钮用。
+    static var fullText: String? {
+        var parts: [String] = []
+        if let text { parts.append("== 未捕获异常 ==\n" + text) }
+        if let json = metricKitText { parts.append("== 系统崩溃报告 ==\n" + json) }
+        return parts.isEmpty ? nil : parts.joined(separator: "\n\n")
+    }
 }
 
 final class AppDiagnostics: NSObject, MXMetricManagerSubscriber, @unchecked Sendable {
