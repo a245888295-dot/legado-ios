@@ -6,7 +6,7 @@ on:
       build_number:
         description: "构建号（写进 Info.plist 的 CFBundleVersion）"
         required: true
-        default: "53"
+        default: "54"
 
 permissions:
   contents: read

@@ -254,7 +254,7 @@ struct ReaderTextView: UIViewRepresentable {
         context.coordinator.installDisplayLink(for: view)
         context.coordinator.installGestures(on: view)
         context.coordinator.updateInteractionMode(on: view, isScrollMode: effectivePageAnimation == 3)
-        context.coordinator.startVolumeKeyPagingIfNeeded()
+        context.coordinator.syncVolumeKeyPaging()
         return view
     }
 
@@ -274,6 +274,7 @@ struct ReaderTextView: UIViewRepresentable {
         view.isPagingEnabled = false
         view.decelerationRate = effectivePageAnimation == 3 ? .normal : .fast
         context.coordinator.updateInteractionMode(on: view, isScrollMode: effectivePageAnimation == 3)
+        context.coordinator.syncVolumeKeyPaging()
         view.backgroundColor = backgroundColor
         view.isOpaque = backgroundColor != .clear
         view.isSelectable = false
@@ -541,12 +542,21 @@ struct ReaderTextView: UIViewRepresentable {
             stopVolumeKeyPaging()
         }
 
+        /// 按「当前是否分页模式 + 开关」对齐音量键监听状态。
+        /// 设置页里改开关、或切换翻页方式之后，updateUIView 会再调一次，这里负责补挂或摘掉。
+        func syncVolumeKeyPaging() {
+            let effective = parent.isEInkMode ? 4 : parent.pageAnimation
+            if effective != 3, ReaderVolumeKeySetting.isEnabled {
+                startVolumeKeyPagingIfNeeded()
+            } else {
+                stopVolumeKeyPaging()
+            }
+        }
+
         /// 只在分页模式挂音量键：滚动模式没有「页」的概念，翻不了。
         /// 用 selector 形式注册而不是闭包：闭包版在 Swift 6 严格并发下要 Sendable，
         /// 把 self 捕获进去会直接编译不过。
-        func startVolumeKeyPagingIfNeeded() {
-            let effective = parent.isEInkMode ? 4 : parent.pageAnimation
-            guard effective != 3, ReaderVolumeKeySetting.isEnabled else { return }
+        private func startVolumeKeyPagingIfNeeded() {
             guard !isListeningVolumeKeys else { return }
             isListeningVolumeKeys = true
             VolumeKeyPager.shared.start()
@@ -556,6 +566,7 @@ struct ReaderTextView: UIViewRepresentable {
                 name: VolumeKeyPager.turnNotification,
                 object: nil
             )
+            DiagnosticLog.shared.record(category: "音量键", message: "监听已挂载（模式 \(parent.isEInkMode ? 4 : parent.pageAnimation)）")
         }
 
         private func stopVolumeKeyPaging() {
