@@ -94,16 +94,26 @@ extension NSAttributedString.Key {
 }
 
 enum ReaderUnderlinePainter {
-    /// 下划线到字底的空隙。按行距取三成，行距越大离得越开，视觉上始终居中偏上。
-    static func gap(lineSpacing: CGFloat) -> CGFloat {
-        max(2.0, lineSpacing * 0.32)
+    /// 下划线到字底的空隙：约 0.34 个字高（微信读书实测 0.35–0.45，字越大离得越远）。
+    static func gap(pointSize: CGFloat) -> CGFloat {
+        max(3.0, pointSize * 0.34)
     }
 
+    /// 线本身要细而有存在感：约 0.045 个字高，实机上就是 1pt 上下。
     static func lineWidth(pointSize: CGFloat) -> CGFloat {
-        max(1.1, min(1.8, pointSize * 0.06))
+        max(0.9, min(1.6, pointSize * 0.045))
     }
 
+    /// 短横虚线，实线段与空白约 1:2.2（微信读书 4px 线 + 8px 空，比例一致），
+    /// 随字号缩放，所以改字号后观感不变。
+    static func dashPattern(pointSize: CGFloat) -> [NSNumber] {
+        let dash = max(1.6, pointSize * 0.10)
+        let space = max(3.0, pointSize * 0.22)
+        return [NSNumber(value: Double(dash)), NSNumber(value: Double(space))]
+    }
+
+    /// 比正文浅一档；正文纯黑时约 38% 不透明度。
     static func strokeColor(_ foreground: UIColor) -> UIColor {
-        foreground.withAlphaComponent(0.45)
+        foreground.withAlphaComponent(0.38)
     }
 }

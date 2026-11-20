@@ -554,6 +554,7 @@ private final class ReaderScrollCanvas: UIView {
         var color: UIColor?
         var mode = 0
         var width: CGFloat = 1.4
+        var pointSize: CGFloat = 17
         var glyphIndex = block.glyphRange.location
         let end = NSMaxRange(block.glyphRange)
 
@@ -569,23 +570,23 @@ private final class ReaderScrollCanvas: UIView {
             let attrs = storage.attributes(at: charRange.location, effectiveRange: nil)
             guard let mark = attrs[.readerUnderline] as? Int else { continue }
             let font = (attrs[.font] as? UIFont) ?? UIFont.systemFont(ofSize: 17)
-            let spacing = (attrs[.paragraphStyle] as? NSParagraphStyle)?.lineSpacing ?? 0
             // 字底 = 基线 - descender（descender 是负数），跟字号、字体、行距都跟着走。
             let bottom = rect.minY + font.ascender - font.descender
-            let y = origin.y + bottom + ReaderUnderlinePainter.gap(lineSpacing: spacing)
+            let y = origin.y + bottom + ReaderUnderlinePainter.gap(pointSize: font.pointSize)
             path.move(to: CGPoint(x: origin.x + used.minX, y: y))
             path.addLine(to: CGPoint(x: origin.x + used.maxX, y: y))
             if color == nil { color = attrs[.foregroundColor] as? UIColor }
             mode = mark
             width = ReaderUnderlinePainter.lineWidth(pointSize: font.pointSize)
+            pointSize = font.pointSize
         }
 
         guard let color, !path.isEmpty else { return }
         ReaderUnderlinePainter.strokeColor(color).setStroke()
         path.lineWidth = width
-        path.lineCapStyle = .round
+        path.lineCapStyle = .butt
         if mode == 2 {
-            let dash: [CGFloat] = [0.1, 3.6]
+            let dash = ReaderUnderlinePainter.dashPattern(pointSize: pointSize).map { CGFloat($0.doubleValue) }
             path.setLineDash(dash, count: dash.count, phase: 0)
         }
         path.stroke()

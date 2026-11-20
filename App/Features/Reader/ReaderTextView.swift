@@ -51,7 +51,7 @@ private final class ReaderLayoutTextView: UITextView {
         if let existing = underlineLayer { return existing }
         let layer = CAShapeLayer()
         layer.fillColor = nil
-        layer.lineCap = .round
+        layer.lineCap = .butt
         layer.lineJoin = .round
         layer.zPosition = 1_000
         layer.contentsScale = UIScreen.main.scale
@@ -70,13 +70,43 @@ private final class ReaderLayoutTextView: UITextView {
         onLayout?(self)
     }
 
+    /// 排版属性变了（改下划线样式、行距、字距、主题色）时强制重绘一次。
+    /// 之前只用文本内容 + 尺寸做 key，属性变化不会让 key 变，所以必须退出再进才生效。
+    func invalidateUnderline() {
+        underlineKey = -1
+        setNeedsLayout()
+    }
+
     private func rebuildUnderlineIfNeeded() {
         let manager = layoutManager
         let storage = textStorage
         let fontSize = storage.length > 0
             ? ((storage.attribute(.font, at: 0, effectiveRange: nil) as? UIFont)?.pointSize ?? 0)
             : 0
-        let key = storage.string.hashValue &+ Int(fontSize) &* 7 &+ Int(bounds.width) &* 131 &+ Int(bounds.height)
+        // 取一段带下划线标记的正文属性作为签名，标题段跳过。
+        var probe: [NSAttributedString.Key: Any] = [:]
+        if storage.length > 0 {
+            var index = 0
+            while index < storage.length {
+                var range = NSRange()
+                let attrs = storage.attributes(at: index, effectiveRange: &range)
+                if attrs[.readerUnderline] != nil { probe = attrs; break }
+                index = max(NSMaxRange(range), index + 1)
+            }
+            if probe.isEmpty { probe = storage.attributes(at: 0, effectiveRange: nil) }
+        }
+        let mark = (probe[.readerUnderline] as? Int) ?? 0
+        let spacing = (probe[.paragraphStyle] as? NSParagraphStyle)?.lineSpacing ?? 0
+        let kern = (probe[.kern] as? NSNumber)?.doubleValue ?? 0
+        let colorKey = (probe[.foregroundColor] as? UIColor)?.hashValue ?? 0
+        let key = storage.string.hashValue
+            &+ mark &* 17
+            &+ Int(fontSize * 10) &* 7
+            &+ Int(spacing * 10) &* 13
+            &+ Int(kern * 10) &* 19
+            &+ colorKey &* 31
+            &+ Int(bounds.width) &* 131
+            &+ Int(bounds.height)
         guard key != underlineKey else { return }
         underlineKey = key
         rebuildUnderline(manager: manager, storage: storage)
@@ -92,6 +122,7 @@ private final class ReaderLayoutTextView: UITextView {
         var color: UIColor?
         var mode = 0
         var width: CGFloat = 1.4
+        var pointSize: CGFloat = 17
         var glyphIndex = 0
         let end = manager.numberOfGlyphs
 
@@ -107,15 +138,15 @@ private final class ReaderLayoutTextView: UITextView {
             let attrs = storage.attributes(at: charRange.location, effectiveRange: nil)
             guard let mark = attrs[.readerUnderline] as? Int else { continue }
             let font = (attrs[.font] as? UIFont) ?? UIFont.systemFont(ofSize: 17)
-            let spacing = (attrs[.paragraphStyle] as? NSParagraphStyle)?.lineSpacing ?? 0
             // 字底 = 基线 - descender（descender 是负数），跟字号、字体、行距都跟着走。
             let bottom = rect.minY + font.ascender - font.descender
-            let y = origin.y + bottom + ReaderUnderlinePainter.gap(lineSpacing: spacing)
+            let y = origin.y + bottom + ReaderUnderlinePainter.gap(pointSize: font.pointSize)
             path.move(to: CGPoint(x: origin.x + used.minX, y: y))
             path.addLine(to: CGPoint(x: origin.x + used.maxX, y: y))
             if color == nil { color = attrs[.foregroundColor] as? UIColor }
             mode = mark
             width = ReaderUnderlinePainter.lineWidth(pointSize: font.pointSize)
+            pointSize = font.pointSize
         }
 
         guard let color, !path.isEmpty else {
@@ -131,7 +162,7 @@ private final class ReaderLayoutTextView: UITextView {
         layer.path = path.cgPath
         layer.strokeColor = ReaderUnderlinePainter.strokeColor(color).cgColor
         layer.lineWidth = width
-        layer.lineDashPattern = mode == 2 ? [0.1, 3.6] as [NSNumber] : nil
+        layer.lineDashPattern = mode == 2 ? ReaderUnderlinePainter.dashPattern(pointSize: pointSize) : nil
     }
 }
 
@@ -273,6 +304,7 @@ struct ReaderTextView: UIViewRepresentable {
             context.coordinator.contentKey = contentKey
             context.coordinator.primaryContentKey = primaryContentKey
             context.coordinator.styleKey = styleKey
+            (view as? ReaderLayoutTextView)?.invalidateUnderline()
             let typography = ReaderTypography(configuration: self)
             let bodyAttributes = typography.bodyAttributes
             let rendered = NSMutableAttributedString(string: "")
