@@ -66,8 +66,9 @@ struct ReaderView: View {
     @AppStorage("lineSpacingExtra") private var lineSpacing = 12.0
     /// 行距倍数（相对字号）。旧版本的 lineSpacing 是绝对 pt，字号一改就失真，这里换成比例。
     @AppStorage("lineHeightMultiple") private var lineHeightMultiple = 1.8
-    /// 段距倍数（相对字号），0.6 字 ≈ 移动阅读常见的半行空。
-    @AppStorage("paraSpacingMultiple") private var paraSpacingMultiple = 0.6
+    /// 段距倍数（相对字号）。中文靠首行缩进分段，段距本来就该很小；0.6 字是西文习惯，
+    /// 叠加在 2 字缩进上会变成"双倍分段信号 + 一大块空白"，所以默认收到 0.18 字。
+    @AppStorage("paraSpacingMultipleV2") private var paraSpacingMultiple = 0.18
     @AppStorage("paragraphSpacing") private var paragraphSpacing = 2.0
     @AppStorage("paragraphIndent") private var paragraphIndent = "　　"
     @AppStorage("paddingLeft") private var paddingLeft = 16.0
@@ -1253,7 +1254,7 @@ struct ReaderView: View {
                 } header: {
                     Text("排版")
                 } footer: {
-                    Text("行距按字号等比缩放，字号超过 22 后会自动收紧，大字不会空得散。其余参数已按移动阅读的常规值设好，一般不用动。")
+                    Text("行距按字号等比缩放，字号超过 22 后自动收紧；段距已按中文小说的习惯收到很小，靠首行缩进分段就够。其余参数一般不用动。")
                 }
 
                 Section("阅读背景") {
@@ -1424,7 +1425,7 @@ struct ReaderView: View {
         fontSize = 19
         letterSpacing = 0
         lineHeightMultiple = 1.8
-        paraSpacingMultiple = 0.6
+        paraSpacingMultiple = 0.18
         paragraphIndent = "　　"
         paddingLeft = 18
         paddingRight = 18
@@ -1451,6 +1452,9 @@ struct ReaderView: View {
                             .foregroundStyle(.secondary)
                     }
                     valueSlider("段距", value: $paraSpacingMultiple, range: 0...2, step: 0.05, format: { String(format: "%.2f 字", $0) })
+                    Text("中文靠首行缩进分段，段距一般 0.1–0.3 字就够；调到 0.5 以上会出现大片空白。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     Picker("字重", selection: $fontWeight) {
                         Text("正常").tag(0)
                         Text("粗体").tag(1)
