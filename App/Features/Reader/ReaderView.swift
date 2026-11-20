@@ -1189,9 +1189,20 @@ struct ReaderView: View {
     }
 
 
+    /// 字号越大，行距倍数越该收紧：大字本身视觉重量足，还按小字的比例留空隙就会显得散。
+    /// 22 号及以下完全不缩放（用户选的三档原值照旧），往上每大一号收 3.3%，最低到 0.72 倍。
+    private var lineHeightScale: Double {
+        max(0.72, 1.0 - 0.033 * max(0, fontSize - 22))
+    }
+
+    /// 实际生效的行距倍数 = 档位 × 字号修正，三档之间的疏密差距按比例保留。
+    private var effectiveLineHeightMultiple: Double {
+        min(2.6, max(1.22, lineHeightMultiple * lineHeightScale))
+    }
+
     /// 行距倍数 → 行间额外间距（pt）。系统字体行高约 1.19 em，超出部分才是额外间距。
     private var effectiveLineSpacing: Double {
-        max(0, (lineHeightMultiple - 1.19) * fontSize)
+        max(0, (effectiveLineHeightMultiple - 1.19) * fontSize)
     }
 
     /// 段距倍数 → 段间距（pt），跟着字号缩放。
@@ -1242,7 +1253,7 @@ struct ReaderView: View {
                 } header: {
                     Text("排版")
                 } footer: {
-                    Text("行距按字号等比缩放，改字号不会把行挤在一起。其余参数已按移动阅读的常规值设好，一般不用动。")
+                    Text("行距按字号等比缩放，字号超过 22 后会自动收紧，大字不会空得散。其余参数已按移动阅读的常规值设好，一般不用动。")
                 }
 
                 Section("阅读背景") {
@@ -1434,6 +1445,11 @@ struct ReaderView: View {
                     valueSlider("字号", value: $fontSize, range: 5...50, format: { "\(Int($0))" })
                     valueSlider("字间距", value: $letterSpacing, range: -0.5...0.5, step: 0.01, format: { String(format: "%.2f", $0) })
                     valueSlider("行距倍数", value: $lineHeightMultiple, range: 1.2...2.6, step: 0.05, format: { String(format: "%.2f 倍", $0) })
+                    if fontSize > 22 {
+                        Text("字号 \(Int(fontSize)) 较大，实际按 \(String(format: "%.2f", effectiveLineHeightMultiple)) 倍排版（大字自动收紧行距）。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     valueSlider("段距", value: $paraSpacingMultiple, range: 0...2, step: 0.05, format: { String(format: "%.2f 字", $0) })
                     Picker("字重", selection: $fontWeight) {
                         Text("正常").tag(0)
