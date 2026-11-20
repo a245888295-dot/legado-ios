@@ -254,6 +254,7 @@ struct ReaderTextView: UIViewRepresentable {
         context.coordinator.installDisplayLink(for: view)
         context.coordinator.installGestures(on: view)
         context.coordinator.updateInteractionMode(on: view, isScrollMode: effectivePageAnimation == 3)
+        context.coordinator.startVolumeKeyPagingIfNeeded()
         return view
     }
 
@@ -420,6 +421,8 @@ struct ReaderTextView: UIViewRepresentable {
         var needsDeferredRender = false
         var isApplyingContent = false
         private var isTurningPage = false
+        /// 是否已挂上音量键监听，避免重复注册。
+        private var isListeningVolumeKeys = false
         private var isRenderingAutoPage = false
         private var lastReportedPage: Int?
         private var autoPageProgress: CGFloat = 0
@@ -535,6 +538,36 @@ struct ReaderTextView: UIViewRepresentable {
             resetAutoPage()
             displayLink?.invalidate()
             displayLink = nil
+            stopVolumeKeyPaging()
+        }
+
+        /// 只在分页模式挂音量键：滚动模式没有「页」的概念，翻不了。
+        /// 用 selector 形式注册而不是闭包：闭包版在 Swift 6 严格并发下要 Sendable，
+        /// 把 self 捕获进去会直接编译不过。
+        func startVolumeKeyPagingIfNeeded() {
+            let effective = parent.isEInkMode ? 4 : parent.pageAnimation
+            guard effective != 3, ReaderVolumeKeySetting.isEnabled else { return }
+            guard !isListeningVolumeKeys else { return }
+            isListeningVolumeKeys = true
+            VolumeKeyPager.shared.start()
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleVolumeKeyTurn(_:)),
+                name: VolumeKeyPager.turnNotification,
+                object: nil
+            )
+        }
+
+        private func stopVolumeKeyPaging() {
+            guard isListeningVolumeKeys else { return }
+            isListeningVolumeKeys = false
+            NotificationCenter.default.removeObserver(self, name: VolumeKeyPager.turnNotification, object: nil)
+            VolumeKeyPager.shared.stop()
+        }
+
+        @objc private func handleVolumeKeyTurn(_ note: Notification) {
+            let direction = note.userInfo?["direction"] as? Int ?? 1
+            turnPage(direction)
         }
 
         func updateAutoRead(isRunning: Bool, isPaused: Bool, secondsPerScreen: Double) {

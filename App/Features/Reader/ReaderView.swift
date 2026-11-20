@@ -69,6 +69,8 @@ struct ReaderView: View {
     /// 段距倍数（相对字号）。中文靠首行缩进分段，段距本来就该很小；0.6 字是西文习惯，
     /// 叠加在 2 字缩进上会变成"双倍分段信号 + 一大块空白"，所以默认收到 0.18 字。
     @AppStorage("paraSpacingMultipleV2") private var paraSpacingMultiple = 0.18
+    /// 音量键翻页。默认开：阅读器该有的能力，不该让人去设置里翻。
+    @AppStorage("readerVolumeKeyPaging") private var volumeKeyPaging = true
     @AppStorage("paragraphSpacing") private var paragraphSpacing = 2.0
     @AppStorage("paragraphIndent") private var paragraphIndent = "　　"
     @AppStorage("paddingLeft") private var paddingLeft = 16.0
@@ -1720,6 +1722,7 @@ struct ReaderView: View {
             Form {
                 Section {
                     Toggle("两端对齐", isOn: $fullJustify)
+                    Toggle("音量键翻页", isOn: $volumeKeyPaging)
                     Toggle("重新分段", isOn: Binding(
                         get: { model.usesParagraphResegmentation },
                         set: { value in
