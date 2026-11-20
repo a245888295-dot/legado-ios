@@ -80,14 +80,34 @@ final class AppDiagnostics: NSObject, MXMetricManagerSubscriber, @unchecked Send
         DiagnosticLog.shared.record(category: "应用", message: "启动 \(version) (\(build))")
     }
 
+    /// 把 MetricKit 报告压成一行：崩溃类型、信号、终止原因、系统版本。
+    /// 这几个字段决定了「是断言、是栈溢出、还是被系统杀掉」，比栈本身更先有用。
+    private static func summary(of data: Data) -> String {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return "系统上报了一次崩溃（报告解析失败）"
+        }
+        let meta = object["diagnosticMetaData"] as? [String: Any] ?? [:]
+        var parts: [String] = ["系统上报了一次崩溃"]
+        if let type = object["exceptionType"] as? Int { parts.append("类型=\(type)") }
+        if let code = object["exceptionCode"] as? Int { parts.append("代码=\(code)") }
+        if let signal = object["signal"] as? Int { parts.append("信号=\(signal)") }
+        if let reason = object["terminationReason"] as? String { parts.append("终止=\(reason)") }
+        if let version = meta["appVersion"] as? String { parts.append("版本=\(version)") }
+        if let os = meta["osVersion"] as? String { parts.append("系统=\(os)") }
+        if let region = object["virtualMemoryRegionInfo"] as? String { parts.append("内存=\(region)") }
+        return parts.joined(separator: " · ") + "\n完整报告见诊断页「系统崩溃报告」"
+    }
+
     func didReceive(_ payloads: [MXDiagnosticPayload]) {
         for payload in payloads {
             for crash in payload.crashDiagnostics ?? [] {
                 // 完整落盘，不走日志（日志单条有长度上限，栈会被截断在半路）。
-                let json = String(decoding: crash.jsonRepresentation(), as: UTF8.self)
+                let data = crash.jsonRepresentation()
+                let json = String(decoding: data, as: UTF8.self)
                 ReaderCrashReport.writeMetricKit(json)
+                // 关键字段直接写进日志：用户只要导出发我，不用再去点那个区块。
                 DiagnosticLog.shared.record(.error, category: "系统诊断",
-                                            message: "系统上报了一次崩溃，完整报告已存到诊断页「系统崩溃报告」。")
+                                            message: Self.summary(of: data))
             }
             for hang in payload.hangDiagnostics ?? [] {
                 DiagnosticLog.shared.record(.warning, category: "系统诊断", message: "卡顿诊断：\(String(decoding: hang.jsonRepresentation(), as: UTF8.self))")

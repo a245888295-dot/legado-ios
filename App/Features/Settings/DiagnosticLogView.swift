@@ -13,6 +13,7 @@ struct DiagnosticLogView: View {
     @State private var errorMessage: String?
     @State private var crashText: String?
     @State private var metricKitText: String?
+    @State private var traceText: String?
 
     private var filtered: [DiagnosticLogEntry] {
         entries.filter {
@@ -62,6 +63,26 @@ struct DiagnosticLogView: View {
                     Text("上次崩溃（排版引擎已自动回退）")
                 } footer: {
                     Text("把这段内容发出去就能定位问题。清除后不会影响阅读。")
+                }
+            }
+            if let traceText {
+                Section {
+                    ScrollView {
+                        Text(traceText)
+                            .font(.system(.caption2, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 200)
+                    Button {
+                        copyToPasteboard(traceText)
+                    } label: {
+                        Label("复制", systemImage: "doc.on.doc")
+                    }
+                } header: {
+                    Text("上次进入阅读页的足迹")
+                } footer: {
+                    Text("按时间记录阅读页走过的每一步，最后一行就是崩溃前停下的位置。")
                 }
             }
             if let metricKitText {
@@ -166,6 +187,9 @@ struct DiagnosticLogView: View {
         if let metricKitText {
             parts.append("\n== 系统崩溃报告（MetricKit 原始 JSON）==\n" + metricKitText)
         }
+        if let traceText {
+            parts.append("\n== 阅读页足迹 ==\n" + traceText)
+        }
         let log = DiagnosticLog.shared.export()
         parts.append("\n== 运行日志（\(entries.count) 条）==\n" + (log.isEmpty ? "（无）" : log))
         return parts.joined(separator: "\n")
@@ -184,6 +208,7 @@ struct DiagnosticLogView: View {
         entries = DiagnosticLog.shared.snapshot()
         crashText = ReaderCrashReport.text
         metricKitText = ReaderCrashReport.metricKitText
+        traceText = ReaderTrace.text
     }
     private func levelTitle(_ level: DiagnosticLogEntry.Level) -> String {
         switch level { case .info: "信息"; case .warning: "警告"; case .error: "错误" }

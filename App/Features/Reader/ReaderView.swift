@@ -247,6 +247,8 @@ struct ReaderView: View {
             Button("好", role: .cancel) { readerSettingSaveError = nil }
         } message: { Text(readerSettingSaveError ?? "") }
         .onAppear {
+            ReaderTrace.clear()
+            ReaderTrace.mark("进入阅读页 引擎关=\(ReaderEngineSwitch.isDisabled) 接管=\(ReaderLineBreakTakeover.isEnabled)")
             migrateTypographyOnce()
             // 进阅读页先立旗，排版跑通后由 ReaderTextView 撤掉。
             // 如果进程在排版过程中死掉，旗子会留到下次启动，用来熔断新版引擎。

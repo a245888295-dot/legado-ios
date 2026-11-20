@@ -425,3 +425,55 @@ final class ReaderTextContainer: NSTextContainer {
         return CGRect(x: base.minX, y: base.minY, width: width, height: base.height)
     }
 }
+
+// MARK: - 阅读页足迹
+//
+// 崩溃现场最难拿到的不是栈，是「死在哪一步」。这里在关键路径打点，
+// 每次都覆盖写同一个文件，崩溃后重进就能看到最后停在哪里。
+// 只要崩溃栈没有符号，足迹就是唯一能定位的手段。
+
+enum ReaderTrace {
+    private static let queue = DispatchQueue(label: "com.legado.reader.trace", qos: .utility)
+    private static var lastMarked: [String: TimeInterval] = [:]
+    private static let maxBytes = 96 * 1024
+
+    private static var fileURL: URL {
+        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Legado", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent("reader-trace.log")
+    }
+
+    /// 只在主线程调用。同一步骤 0.5 秒内只记一次，避免布局回调把文件刷爆。
+    static func mark(_ step: String) {
+        let now = Date().timeIntervalSince1970
+        if let last = lastMarked[step], now - last < 0.5 { return }
+        lastMarked[step] = now
+        queue.async {
+            let url = fileURL
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+            let size = (attributes?[.size] as? Int) ?? 0
+            if size > maxBytes {
+                try? FileManager.default.removeItem(at: url)
+            }
+            let line = String(format: "%.3f  %@\n", now, step)
+            guard let data = line.data(using: .utf8) else { return }
+            if let handle = try? FileHandle(forWritingTo: url) {
+                handle.seekToEndOfFile()
+                handle.write(data)
+                try? handle.close()
+            } else {
+                try? data.write(to: url)
+            }
+        }
+    }
+
+    static var text: String? {
+        guard let value = try? String(contentsOf: fileURL, encoding: .utf8) else { return nil }
+        return value.isEmpty ? nil : value
+    }
+
+    static func clear() {
+        queue.async { try? FileManager.default.removeItem(at: fileURL) }
+    }
+}

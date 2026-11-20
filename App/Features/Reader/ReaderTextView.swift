@@ -139,6 +139,7 @@ private final class ReaderLayoutTextView: UITextView {
             underlineLayer?.path = nil
             return
         }
+        ReaderTrace.mark("下划线绘制开始 字形=\(manager.numberOfGlyphs)")
         let origin = CGPoint(x: textContainerInset.left, y: textContainerInset.top)
         let path = UIBezierPath()
         var color: UIColor?
@@ -171,6 +172,7 @@ private final class ReaderLayoutTextView: UITextView {
             pointSize = font.pointSize
         }
 
+        defer { ReaderTrace.mark("下划线绘制完成") }
         guard let color, !path.isEmpty else {
             underlineLayer?.path = nil
             return
@@ -288,6 +290,7 @@ struct ReaderTextView: UIViewRepresentable {
 
     func updateUIView(_ view: UITextView, context: Context) {
         context.coordinator.parent = self
+        ReaderTrace.mark("更新视图 字=\(text.count) 字号=\(Int(fontSize))")
         let viewportSizeChanged = view.bounds.size != .zero
             && context.coordinator.lastViewportSize != view.bounds.size
         if viewportSizeChanged {
@@ -711,7 +714,9 @@ struct ReaderTextView: UIViewRepresentable {
         private func pages(in view: UITextView) -> [ReaderTextPage] {
             let key = "\(styleKey)|\(view.bounds.size)|\(view.textContainerInset)|\(view.textContainer.size.width)"
             if paginationKey != key || cachedPages.isEmpty {
+                ReaderTrace.mark("分页开始 字=\(view.text.count) 高=\(Int(view.bounds.height))")
                 cachedPages = ReaderTextPage.layout(in: view, height: readingViewportHeight(for: view))
+                ReaderTrace.mark("分页完成 页数=\(cachedPages.count)")
                 paginationKey = key
             }
             // The last page also starts at a complete line, even when it
@@ -739,6 +744,7 @@ struct ReaderTextView: UIViewRepresentable {
             let pages = pages(in: view)
             guard !pages.isEmpty else { return }
             let page = pages[pageIndex(in: view, pages: pages)]
+            ReaderTrace.mark("遮罩 页=\(pageIndex(in: view, pages: pages)) 段数=\(pages.count)")
             // UITextView lays out one continuous document. Hide neighboring
             // lines in the per-page margins instead of showing partial lines.
             let rect = CGRect(x: view.bounds.minX, y: view.bounds.minY + view.textContainerInset.top,
@@ -894,6 +900,7 @@ struct ReaderTextView: UIViewRepresentable {
                 return
             }
             guard !view.text.isEmpty else { return }
+            ReaderTrace.mark("区间上报开始")
             // 排版跑通了，撤掉「进页中断」的旗子。
             if UserDefaults.standard.bool(forKey: "readerEnginePendingOpen") {
                 UserDefaults.standard.set(false, forKey: "readerEnginePendingOpen")
@@ -909,6 +916,7 @@ struct ReaderTextView: UIViewRepresentable {
                 ranges.append(NSRange(location: start, length: max(end - start, 0)))
             }
             if ranges.isEmpty {
+                ReaderTrace.mark("区间为空 重试\(pageRangeRetryCount)")
                 guard pageRangeRetryCount < 10 else { return }
                 pageRangeRetryCount += 1
                 let generation = layoutGeneration
