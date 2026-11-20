@@ -81,6 +81,7 @@ struct ReaderView: View {
     @AppStorage("titleTopSpacing") private var titleTopSpacing = 0.0
     @AppStorage("titleBottomSpacing") private var titleBottomSpacing = 0.0
     @AppStorage("underlineMode") private var underlineMode = 0
+    @State private var showsResetTypographyAlert = false
     @AppStorage("headerPaddingBottom") private var headerPaddingBottom = 0.0
     @AppStorage("headerPaddingLeft") private var headerPaddingLeft = 16.0
     @AppStorage("headerPaddingRight") private var headerPaddingRight = 16.0
@@ -1357,6 +1358,14 @@ struct ReaderView: View {
                 } footer: {
                     Text("字间距、段距、缩进、字重、下划线、标题样式、正文边距、页眉页脚。")
                 }
+
+                Section {
+                    Button("恢复默认排版", role: .destructive) {
+                        showsResetTypographyAlert = true
+                    }
+                } footer: {
+                    Text("把字号、字距、行距、段距、缩进、边距、对齐、下划线一次性恢复成移动阅读的常用值。主题和翻页方式不受影响。")
+                }
             }
             .navigationTitle("阅读样式")
             .navigationBarTitleDisplayMode(.inline)
@@ -1392,6 +1401,31 @@ struct ReaderView: View {
         }
         .readingPresentationDetents([.medium, .large])
         .readingPresentationDragIndicator()
+        .confirmationDialog("恢复默认排版？", isPresented: $showsResetTypographyAlert, titleVisibility: .visible) {
+            Button("恢复默认", role: .destructive) { resetTypographyToDefaults() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("当前的字号、行距、边距等会全部被覆盖，已保存的阅读进度和书签不受影响。")
+        }
+    }
+
+    private func resetTypographyToDefaults() {
+        fontSize = 19
+        letterSpacing = 0
+        lineHeightMultiple = 1.8
+        paraSpacingMultiple = 0.6
+        paragraphIndent = "　　"
+        paddingLeft = 18
+        paddingRight = 18
+        paddingTop = 10
+        paddingBottom = 10
+        fontWeight = 0
+        fullJustify = true
+        titleMode = 0
+        titleSize = 0
+        titleTopSpacing = 12
+        titleBottomSpacing = 8
+        underlineMode = 0
     }
 
     private var advancedStyleControls: some View {
