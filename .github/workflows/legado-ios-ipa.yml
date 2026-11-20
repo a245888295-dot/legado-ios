@@ -39,7 +39,6 @@ jobs:
             -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' \
             -derivedDataPath build/DeviceDerivedData \
-            -allowProvisioningUpdates NO \
             CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO \
             build 2>&1 | tee /tmp/xcodebuild.log | tail -80
 
