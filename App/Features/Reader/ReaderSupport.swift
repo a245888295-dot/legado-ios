@@ -445,7 +445,9 @@ final class ReaderTextContainer: NSTextContainer {
 
 enum ReaderTrace {
     private static let queue = DispatchQueue(label: "com.legado.reader.trace", qos: .utility)
-    private static var lastMarked: [String: TimeInterval] = [:]
+    /// 只在主线程读写（mark 全部从 UI 更新、布局回调里调用），
+    /// 所以这里明确豁免并发检查，不用锁也不用 actor —— 上锁反而会给每次布局加开销。
+    nonisolated(unsafe) private static var lastMarked: [String: TimeInterval] = [:]
     private static let maxBytes = 96 * 1024
 
     private static var fileURL: URL {
