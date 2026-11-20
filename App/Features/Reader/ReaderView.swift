@@ -216,6 +216,7 @@ struct ReaderView: View {
         readerCanvas
         .preferredColorScheme(resolvedStyle.id == "night" ? .dark : .light)
         .readingTabBarHidden()
+        .readingNavigationBarHidden()
         .navigationBarBackButtonHidden(true)
         .background {
             ReaderInteractivePopEnabler()

@@ -1,0 +1,78 @@
+name: Legado iOS unsigned IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: "构建号（写进 Info.plist 的 CFBundleVersion）"
+        required: true
+        default: "22"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Resolve packages
+        run: |
+          set -o pipefail
+          xcodebuild -project Legado.xcodeproj -scheme Legado -resolvePackageDependencies 2>&1 | tail -20
+
+      - name: Build device app (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild -project Legado.xcodeproj -scheme Legado \
+            -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DeviceDerivedData \
+            -allowProvisioningUpdates NO \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO \
+            build 2>&1 | tee /tmp/xcodebuild.log | tail -80
+
+      - name: Package IPA
+        if: success()
+        run: |
+          set -euo pipefail
+          APP=build/DeviceDerivedData/Build/Products/Release-iphoneos/Legado.app
+          test -d "$APP"
+          rm -rf dist && mkdir -p dist/Payload
+          cp -R "$APP" dist/Payload/
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${{ inputs.build_number }}" dist/Payload/Legado.app/Info.plist || true
+          brew install ldid >/dev/null 2>&1 || true
+          LDID=$(command -v ldid || echo /opt/homebrew/bin/ldid)
+          "$LDID" -S dist/Payload/Legado.app/Legado || true
+          find dist/Payload -name '*.dylib' -print0 | while IFS= read -r -d '' f; do "$LDID" -S "$f" || true; done
+          ( cd dist && zip -qry "legado-ios-v0.1.15-build${{ inputs.build_number }}-unsigned.ipa" Payload )
+          ls -lh dist
+          /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' dist/Payload/Legado.app/Info.plist || true
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' dist/Payload/Legado.app/Info.plist || true
+
+      - name: Upload IPA
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: legado-ios-ipa
+          path: dist/*.ipa
+          if-no-files-found: error
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: /tmp/xcodebuild.log
+          if-no-files-found: warn

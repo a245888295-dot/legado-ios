@@ -382,6 +382,19 @@ extension View {
     }
 
     @ViewBuilder
+    func readingNavigationBarHidden(_ hidden: Bool = true) -> some View {
+        // 阅读页是全屏画布，顶上那条空导航栏既没用又白白吃掉 44pt。
+        // iOS 16 用 toolbar 修饰符；iOS 15 退回 navigationBarHidden。
+        if #available(iOS 16.0, *), !ReadingCompatibility.usesLegacyUI {
+            toolbar(hidden ? .hidden : .visible, for: .navigationBar)
+        } else if hidden {
+            navigationBarHidden(true)
+        } else {
+            self
+        }
+    }
+
+    @ViewBuilder
     func readingHomeIndicatorHidden(_ hidden: Bool) -> some View {
         if #available(iOS 16.0, *) {
             persistentSystemOverlays(hidden ? .hidden : .automatic)
@@ -454,7 +467,10 @@ private struct ReadingHiddenTabBar: UIViewControllerRepresentable {
 
     final class Controller: UIViewController {
         private weak var hiddenBar: UITabBar?
+        private weak var hostingTabBarController: UITabBarController?
         private var previouslyHidden = false
+        private var previouslyInset: UIEdgeInsets?
+        private var reclaimedHeight: CGFloat = 0
 
         override func loadView() { view = UIView(); view.isUserInteractionEnabled = false }
 
@@ -462,13 +478,40 @@ private struct ReadingHiddenTabBar: UIViewControllerRepresentable {
             super.viewWillAppear(animated)
             guard let bar = tabBarController?.tabBar else { return }
             hiddenBar = bar
+            hostingTabBarController = tabBarController
             previouslyHidden = bar.isHidden
             bar.isHidden = true
+            if previouslyInset == nil { previouslyInset = tabBarController?.additionalSafeAreaInsets ?? .zero }
+            reclaimSpace()
+        }
+
+        override func viewDidLayoutSubviews() {
+            super.viewDidLayoutSubviews()
+            reclaimSpace()
+        }
+
+        /// UITabBar 只是 isHidden，UITabBarController 依然按它存在计算子视图的 safe area，
+        /// 于是正文底部永远空着一条与标签栏等高的空白。这里用等量的负 inset 把空间还回去。
+        private func reclaimSpace() {
+            guard let tab = hostingTabBarController, let bar = hiddenBar, bar.isHidden else { return }
+            let height = bar.bounds.height > 0 ? bar.bounds.height : (bar.frame.height > 0 ? bar.frame.height : 49)
+            guard height > 0, abs(height - reclaimedHeight) > 0.5 else { return }
+            var insets = previouslyInset ?? tab.additionalSafeAreaInsets
+            insets.bottom -= height
+            reclaimedHeight = height
+            if tab.additionalSafeAreaInsets != insets {
+                tab.additionalSafeAreaInsets = insets
+            }
         }
 
         override func viewWillDisappear(_ animated: Bool) {
             super.viewWillDisappear(animated)
             hiddenBar?.isHidden = previouslyHidden
+            if let previous = previouslyInset {
+                hostingTabBarController?.additionalSafeAreaInsets = previous
+            }
+            previouslyInset = nil
+            reclaimedHeight = 0
         }
     }
 }
