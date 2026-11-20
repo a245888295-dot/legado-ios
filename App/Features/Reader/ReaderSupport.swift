@@ -125,33 +125,41 @@ enum ReaderUnderlinePainter {
 
 /// 用实体音量键翻页。
 ///
-/// 三个环节缺一不可：
+/// iOS 没有公开接口能直接读音量键，能用的只有「音量变化」这件事本身。四个要点：
 ///
-/// 1. **静音音频循环**：App 没在播放任何音频时，系统不保证把音量变化投递给前台 App。
-///    循环播放一段全零的 WAV（音量 0）让音频会话一直保持 active，后面两条监听才有事件可收。
-/// 2. **两条监听**：`AVSystemController_SystemVolumeDidChangeNotification`（私有通知，userInfo 带音量值）
-///    和 `AVAudioSession.outputVolume` 的 KVO。iOS 各版本对这两条的支持不一样，两条一起挂，
-///    谁先到谁处理，另一条因为数值相同会被去重掉。
-/// 3. **音量回写**：翻页后立刻把音量设回按键前的值。优先用 `MPVolumeView` 的滑块（公开 API），
-///    拿不到滑块再退到私有方法 `setVolumeTo:forCategory:`。
-final class VolumeKeyPager: @unchecked Sendable {
+/// 1. **通知在 iOS 15 改了名字**：iOS 14 及以前叫 `AVSystemController_SystemVolumeDidChangeNotification`，
+///    iOS 15 起叫 `SystemVolumeDidChange`，`userInfo` 的键也换成了 `Volume` / `Reason` / `SequenceNumber`。
+///    两个名字都挂，按键才能收到。
+/// 2. **必须留一个 MPVolumeView 实例**：没有它，系统不会发出这条通知；顺带它的滑块也是写入音量的公开通道。
+/// 3. **静音音频循环**：App 没在出声时，系统不保证把音量变化投递给前台 App。循环播放一段全零 WAV，
+///    让音频会话一直 active。音频是 0 音量且有 mixWithOthers，不会打断你后台放的音乐。
+/// 4. **回写音量**：翻页后立刻把音量设回按键前的值，用户感觉音量没动过。
+///
+/// 一次按键系统会连发两条通知（`SequenceNumber` 相同），靠它去重。
+final class VolumeKeyPager: NSObject, @unchecked Sendable {
     static let shared = VolumeKeyPager()
 
     /// 翻页请求。direction 与 `Coordinator.turnPage(_:)` 一致：1 下一页，-1 上一页。
     static let turnNotification = Notification.Name("readerVolumeKeyTurn")
 
+    /// iOS 15 起改名，旧名字同时保留。
+    private static let notificationNames = [
+        "SystemVolumeDidChange",
+        "AVSystemController_SystemVolumeDidChangeNotification",
+    ].map { Notification.Name($0) }
+
     private var isActive = false
-    private var noteObserver: NSObjectProtocol?
     private var volumeObservation: NSKeyValueObservation?
     private var silentPlayer: AVAudioPlayer?
     private var volumeView: MPVolumeView?
 
     private var lastVolume: Float = -1
+    private var lastSequence = -1
     private var lastFire: CFTimeInterval = 0
     /// 回写音量期间收到的通知要丢掉，否则会自己翻自己。
     private var suppressUntil: CFTimeInterval = 0
 
-    private init() {}
+    private override init() { super.init() }
 
     var isRunning: Bool { isActive }
 
@@ -167,33 +175,27 @@ final class VolumeKeyPager: @unchecked Sendable {
         try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
         try? session.setActive(true, options: [])
         startSilentLoop()
+        installVolumeView()
 
         lastVolume = session.outputVolume
         note("启动 会话活跃=\(session.isActive) 当前音量=\(lastVolume)")
 
-        noteObserver = NotificationCenter.default.addObserver(
-            forName: Notification.Name("AVSystemController_SystemVolumeDidChangeNotification"),
-            object: nil,
-            queue: .main
-        ) { note in
-            let value = (note.userInfo?["AVSystemController_AudioVolumeNotificationParameter"] as? NSNumber)?.floatValue
-            let reason = note.userInfo?["AVSystemController_AudioVolumeChangeReasonNotificationParameter"] as? String
-            VolumeKeyPager.shared.receive(volume: value, reason: reason)
+        for name in Self.notificationNames {
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(volumeDidChange(_:)), name: name, object: nil
+            )
         }
 
         volumeObservation = session.observe(\.outputVolume, options: [.new]) { _, change in
             guard let value = change.newValue else { return }
-            DispatchQueue.main.async { VolumeKeyPager.shared.receive(volume: value, reason: nil) }
+            DispatchQueue.main.async { VolumeKeyPager.shared.receive(volume: value, reason: nil, sequence: nil) }
         }
     }
 
     func stop() {
         guard isActive else { return }
         isActive = false
-        if let noteObserver {
-            NotificationCenter.default.removeObserver(noteObserver)
-        }
-        noteObserver = nil
+        NotificationCenter.default.removeObserver(self)
         volumeObservation?.invalidate()
         volumeObservation = nil
         silentPlayer?.stop()
@@ -204,27 +206,56 @@ final class VolumeKeyPager: @unchecked Sendable {
         note("停止")
     }
 
-    private func receive(volume: Float?, reason: String?) {
+    /// 通知回调可能不在主线程，统一切回主线程处理。
+    @objc private func volumeDidChange(_ notification: Notification) {
+        let info = notification.userInfo
+        let volume = (info?["Volume"] as? NSNumber)?.floatValue
+            ?? (info?["AVSystemController_AudioVolumeNotificationParameter"] as? NSNumber)?.floatValue
+        let reason = (info?["Reason"] as? String)
+            ?? (info?["AVSystemController_AudioVolumeChangeReasonNotificationParameter"] as? String)
+        let sequence = (info?["SequenceNumber"] as? NSNumber)?.intValue
+        DispatchQueue.main.async { [weak self] in
+            self?.receive(volume: volume, reason: reason, sequence: sequence)
+        }
+    }
+
+    private func receive(volume: Float?, reason: String?, sequence: Int?) {
         // 开关随时可能被改，这里每次都读；关掉就完全不动系统音量。
         guard isActive, ReaderVolumeKeySetting.isEnabled else { return }
         guard let current = volume else { return }
+        // 程序自己回写音量引起的通知，一律丢掉。
+        guard reason == nil || reason == "ExplicitVolumeChange" else { return }
+        if let sequence, sequence == lastSequence { return }
+        if let sequence { lastSequence = sequence }
 
         let now = CACurrentMediaTime()
-        // 自己回写音量会再触发一次，落在压制窗口里直接丢掉。
         if now < suppressUntil { lastVolume = current; return }
-        guard now - lastFire > 0.13 else { lastVolume = current; return }
+        guard now - lastFire > 0.12 else { lastVolume = current; return }
 
         let previous = lastVolume
-        guard previous >= 0, abs(current - previous) > 0.004 else { lastVolume = current; return }
+        guard previous >= 0 else { lastVolume = current; return }
+
+        let rising: Bool
+        if abs(current - previous) > 0.004 {
+            rising = current > previous
+        } else if previous >= 0.999 {
+            // 音量已经到顶，再按只能是音量+（通知里的数值不会变）。
+            rising = true
+        } else if previous <= 0.001 {
+            rising = false
+        } else {
+            lastVolume = current
+            return
+        }
 
         lastFire = now
         lastVolume = current
-        note("按键 \(previous) → \(current) 原因=\(reason ?? "无")")
+        note("按键 \(previous) → \(current) 原因=\(reason ?? "无") 序号=\(sequence.map { String($0) } ?? "-")")
 
         NotificationCenter.default.post(
             name: VolumeKeyPager.turnNotification,
             object: nil,
-            userInfo: ["direction": VolumeKeyPager.direction(volumeRising: current > previous)]
+            userInfo: ["direction": VolumeKeyPager.direction(volumeRising: rising)]
         )
         restore(to: previous)
     }
@@ -234,7 +265,6 @@ final class VolumeKeyPager: @unchecked Sendable {
         lastVolume = value
         let ok = setVolume(value)
         note("回写 \(value) \(ok ? "成功" : "失败")")
-        // 回写落地后以系统真实值为准，防止和系统值漂移。
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
             guard let self, self.isActive else { return }
             self.lastVolume = AVAudioSession.sharedInstance().outputVolume
@@ -242,6 +272,24 @@ final class VolumeKeyPager: @unchecked Sendable {
     }
 
     // MARK: 音量写入
+
+    /// `MPVolumeView` 里的 UISlider 就是系统音量控制器。
+    /// 这个视图必须挂在窗口上才有作用，所以放在屏幕外、不可交互、几乎透明。
+    private func installVolumeView() {
+        guard volumeView == nil, let window = Self.keyWindow() else { return }
+        let view = MPVolumeView(frame: CGRect(x: -300, y: -300, width: 120, height: 40))
+        view.alpha = 0.01
+        view.isUserInteractionEnabled = false
+        view.showsRouteButton = false
+        window.addSubview(view)
+        view.layoutIfNeeded()
+        volumeView = view
+        note("MPVolumeView 已就位 滑块=\(volumeSlider() != nil)")
+    }
+
+    private func volumeSlider() -> UISlider? {
+        volumeView?.subviews.compactMap { $0 as? UISlider }.first
+    }
 
     @discardableResult
     private func setVolume(_ value: Float) -> Bool {
@@ -252,22 +300,6 @@ final class VolumeKeyPager: @unchecked Sendable {
         return Self.setSystemVolume(value)
     }
 
-    /// `MPVolumeView` 内部的 UISlider 就是系统音量控制器，必须挂在窗口上才有作用。
-    private func volumeSlider() -> UISlider? {
-        if let view = volumeView, view.window != nil,
-           let slider = view.subviews.compactMap({ $0 as? UISlider }).first {
-            return slider
-        }
-        guard let window = Self.keyWindow() else { return nil }
-        let view = MPVolumeView(frame: CGRect(x: -300, y: -300, width: 120, height: 40))
-        view.alpha = 0.01
-        view.showsRouteButton = false
-        window.addSubview(view)
-        volumeView = view
-        view.layoutIfNeeded()
-        return view.subviews.compactMap { $0 as? UISlider }.first
-    }
-
     private static func keyWindow() -> UIWindow? {
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         for scene in scenes {
@@ -276,7 +308,7 @@ final class VolumeKeyPager: @unchecked Sendable {
         return scenes.flatMap(\.windows).first
     }
 
-    /// 私有 API：`AVSystemController` 的 `setVolumeTo:forCategory:`，两个签名都试。
+    /// 备用通道：私有方法 `AVSystemController.setVolumeTo:forCategory:`。
     private static func setSystemVolume(_ value: Float) -> Bool {
         let sharedSelector = NSSelectorFromString("sharedAVSystemController")
         guard let cls = NSClassFromString("AVSystemController") as? NSObject.Type,
@@ -290,13 +322,6 @@ final class VolumeKeyPager: @unchecked Sendable {
             typealias Fn = @convention(c) (AnyObject, Selector, Float, AnyObject) -> Bool
             let fn = unsafeBitCast(method_getImplementation(method), to: Fn.self)
             if fn(controller, twoArg, value, "Audio/Video" as AnyObject) { return true }
-        }
-
-        let threeArg = NSSelectorFromString("setVolumeTo:forCategory:mode:")
-        if let method = class_getInstanceMethod(controllerClass, threeArg) {
-            typealias Fn = @convention(c) (AnyObject, Selector, Float, AnyObject, AnyObject) -> Bool
-            let fn = unsafeBitCast(method_getImplementation(method), to: Fn.self)
-            return fn(controller, threeArg, value, "Audio/Video" as AnyObject, 0 as AnyObject)
         }
         return false
     }
@@ -316,7 +341,7 @@ final class VolumeKeyPager: @unchecked Sendable {
         silentPlayer = player
     }
 
-    /// 生成一段 0.25 秒、16 位单声道、全零的 WAV。不需要外部资源文件。
+    /// 生成 0.25 秒、16 位单声道、全零的 WAV，不需要外部资源。
     private static func silentWAV(seconds: Double = 0.25, sampleRate: Int = 8000) -> Data {
         let frames = Int(Double(sampleRate) * seconds)
         let dataSize = frames * 2
@@ -355,8 +380,7 @@ final class VolumeKeyPager: @unchecked Sendable {
         return dir.appendingPathComponent("volume-key.log")
     }()
 
-    /// 无条件写一行日志到 volume-key.log，同时进诊断日志。
-    /// 这样即使「记录日志」开关关着，也能从这里查到按键有没有被收到。
+    /// 无条件写一行到 volume-key.log（不受「记录运行日志」开关影响），同时进诊断日志。
     private func note(_ text: String) {
         DiagnosticLog.shared.record(category: "音量键", message: text)
         let line = "\(Date().formatted(date: .omitted, time: .standard)) \(text)\n"
