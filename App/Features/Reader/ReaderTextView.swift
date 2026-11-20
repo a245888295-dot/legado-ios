@@ -258,7 +258,7 @@ struct ReaderTextView: UIViewRepresentable {
         let view = ReaderLayoutTextView(frame: .zero, textContainer: container)
         let metrics = ReaderLineMetrics()
         metrics.storage = view.textStorage
-        metrics.enabled = !ReaderEngineSwitch.isDisabled
+        metrics.enabled = ReaderLineBreakTakeover.isEnabled && !ReaderEngineSwitch.isDisabled
         container.metrics = metrics
         context.coordinator.lineMetrics = metrics
         view.onLayout = { [weak coordinator = context.coordinator] view in

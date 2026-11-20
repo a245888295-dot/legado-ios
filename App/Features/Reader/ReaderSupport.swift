@@ -128,6 +128,18 @@ enum ReaderUnderlinePainter {
 // 不再存任何一个绝对 pt —— 以前字号一放大，行距/段距/边距全被稀释，
 // 用户看到的就是「28 号字满屏留白」。
 
+/// 是否把断行权从 TextKit 手里接管过来（中文避头尾真正生效的前提）。
+///
+/// 默认关闭：接管靠重写 `NSTextContainer.lineFragmentRect`，这是我们代码里
+/// 唯一一处跟系统布局器「抢方向盘」的地方 —— 一旦某本书出现极端行宽，
+/// 系统的 usedRect 断言会把进程直接带走。所以它作为实验特性单独立开关，
+/// 稳了再默认打开。
+enum ReaderLineBreakTakeover {
+    static let defaultsKey = "readerTakeoverLineBreakV1"
+    static var isEnabled: Bool { UserDefaults.standard.bool(forKey: defaultsKey) }
+    static func setEnabled(_ value: Bool) { UserDefaults.standard.set(value, forKey: defaultsKey) }
+}
+
 /// 新版排版引擎的开关。
 /// 一旦有未捕获异常（多半来自 TextKit 布局断言），启动时会自动置为 true，
 /// 退回「只调参数、不接管断行」的旧路径，让用户还能正常读书。
@@ -369,6 +381,12 @@ final class ReaderLineMetrics {
         // 至少要能放下两个字，否则说明这次收缩不合理（多半是超长英文单词或极端字号），
         // 交回系统处理，免得排出一字一行。
         guard fixed - lineStart >= 2 else {
+            cache[key] = 0
+            return nil
+        }
+        // 收缩幅度设上限：缩完还不到原行宽的 55%，说明这一行几乎是整行标点，
+        // 硬缩会让 TextKit 的 usedRect 超出 fragmentRect 而抛断言 —— 宁可这行不避。
+        guard fixed - lineStart >= count * 55 / 100 else {
             cache[key] = 0
             return nil
         }

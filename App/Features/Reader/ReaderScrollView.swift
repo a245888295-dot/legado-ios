@@ -476,6 +476,7 @@ final class ReaderScrollChapterLayout {
         container = ReaderTextContainer(size: CGSize(width: textWidth, height: .greatestFiniteMagnitude))
         container.lineFragmentPadding = 0
         container.metrics = metrics
+        metrics.enabled = ReaderLineBreakTakeover.isEnabled && !ReaderEngineSwitch.isDisabled
         metrics.indentWidth = typography.indentWidth
         let attributed = NSMutableAttributedString(string: "")
         if configuration.titleMode != 2, !chapter.title.isEmpty {

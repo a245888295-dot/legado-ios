@@ -10,6 +10,7 @@ struct DiagnosticLogView: View {
     @State private var exportText = ""
     @State private var errorMessage: String?
     @State private var crashText: String?
+    @State private var metricKitText: String?
 
     private var filtered: [DiagnosticLogEntry] {
         entries.filter {
@@ -37,6 +38,25 @@ struct DiagnosticLogView: View {
                     Text("上次崩溃（排版引擎已自动回退）")
                 } footer: {
                     Text("把这段内容发出去就能定位问题。清除后不会影响阅读。")
+                }
+            }
+            if let metricKitText {
+                Section {
+                    ScrollView {
+                        Text(metricKitText)
+                            .font(.system(.caption2, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 260)
+                    Button("清除系统报告", role: .destructive) {
+                        ReaderCrashReport.clearMetricKit()
+                        self.metricKitText = nil
+                    }
+                } header: {
+                    Text("系统崩溃报告（iOS 自动上报）")
+                } footer: {
+                    Text("含崩溃线程的完整调用栈，能定位到具体函数。连这个一起发出来。")
                 }
             }
             Section {
@@ -104,6 +124,7 @@ struct DiagnosticLogView: View {
     private func reload() {
         entries = DiagnosticLog.shared.snapshot()
         crashText = ReaderCrashReport.text
+        metricKitText = ReaderCrashReport.metricKitText
     }
     private func levelTitle(_ level: DiagnosticLogEntry.Level) -> String {
         switch level { case .info: "信息"; case .warning: "警告"; case .error: "错误" }

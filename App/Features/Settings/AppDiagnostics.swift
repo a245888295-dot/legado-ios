@@ -25,6 +25,23 @@ enum ReaderCrashReport {
     static func clear() {
         try? FileManager.default.removeItem(at: fileURL)
     }
+
+    /// MetricKit 的原始诊断包。它比 uncaughtException 覆盖得广：
+    /// 卡死、看门狗、栈溢出这类抓不到 ObjC 异常的崩溃，只有它有记录。
+    private static var metricKitURL: URL { directory.appendingPathComponent("metrickit-crash.json") }
+
+    static var metricKitText: String? {
+        guard let value = try? String(contentsOf: metricKitURL, encoding: .utf8) else { return nil }
+        return value.isEmpty ? nil : value
+    }
+
+    static func writeMetricKit(_ json: String) {
+        try? (json + "\n").write(to: metricKitURL, atomically: true, encoding: .utf8)
+    }
+
+    static func clearMetricKit() {
+        try? FileManager.default.removeItem(at: metricKitURL)
+    }
 }
 
 final class AppDiagnostics: NSObject, MXMetricManagerSubscriber, @unchecked Sendable {
@@ -50,13 +67,19 @@ final class AppDiagnostics: NSObject, MXMetricManagerSubscriber, @unchecked Send
                 ReaderCrashReport.write("上次进入阅读页时进程被中断（多半是排版布局死循环或断言），已自动回退排版引擎。\n")
             }
         }
-        DiagnosticLog.shared.record(category: "应用", message: "启动 \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")")
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+        DiagnosticLog.shared.record(category: "应用", message: "启动 \(version) (\(build))")
     }
 
     func didReceive(_ payloads: [MXDiagnosticPayload]) {
         for payload in payloads {
             for crash in payload.crashDiagnostics ?? [] {
-                DiagnosticLog.shared.record(.error, category: "系统诊断", message: "崩溃诊断：\(String(decoding: crash.jsonRepresentation(), as: UTF8.self))")
+                // 完整落盘，不走日志（日志单条有长度上限，栈会被截断在半路）。
+                let json = String(decoding: crash.jsonRepresentation(), as: UTF8.self)
+                ReaderCrashReport.writeMetricKit(json)
+                DiagnosticLog.shared.record(.error, category: "系统诊断",
+                                            message: "系统上报了一次崩溃，完整报告已存到诊断页「系统崩溃报告」。")
             }
             for hang in payload.hangDiagnostics ?? [] {
                 DiagnosticLog.shared.record(.warning, category: "系统诊断", message: "卡顿诊断：\(String(decoding: hang.jsonRepresentation(), as: UTF8.self))")
